@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  storage:
+    build:
+      context: .
+      dockerfile: storage/Dockerfile
+    container_name: outpost-storage
+    environment:
+      - PORT=8091
+    ports:
+      - "8091:8091"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8091/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
+
+  write-api:
+    build:
+      context: .
+      dockerfile: write-api/Dockerfile
+    container_name: outpost-write-api
+    environment:
+      - PORT=8090
+      - STORAGE_HOST=storage
+      - STORAGE_PORT=8091
+    ports:
+      - "8090:8090"
+    depends_on:
+      storage:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
+
+  edge-1:
+    build:
+      context: .
+      dockerfile: edge/Dockerfile
+    container_name: outpost-edge-1
+    environment:
+      - PORT=8080
+      - NODE_ID=edge-1
+      - WRITE_API_HOST=write-api
+      - WRITE_API_PORT=8090
+    ports:
+      - "8080:8080"
+    depends_on:
+      write-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
+
+  edge-2:
+    build:
+      context: .
+      dockerfile: edge/Dockerfile
+    container_name: outpost-edge-2
+    environment:
+      - PORT=8081
+      - NODE_ID=edge-2
+      - WRITE_API_HOST=write-api
+      - WRITE_API_PORT=8090
+    ports:
+      - "8081:8081"
+    depends_on:
+      write-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
+
+  edge-3:
+    build:
+      context: .
+      dockerfile: edge/Dockerfile
+    container_name: outpost-edge-3
+    environment:
+      - PORT=8082
+      - NODE_ID=edge-3
+      - WRITE_API_HOST=write-api
+      - WRITE_API_PORT=8090
+    ports:
+      - "8082:8082"
+    depends_on:
+      write-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
