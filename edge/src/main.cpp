@@ -1,29 +1,53 @@
+/// @file main.cpp
+/// @brief Outpost Edge Service — caching proxy with circuit breaker.
+///
+/// Each edge node runs one instance of this binary. Configuration is via
+/// environment variables:
+///   PORT              — HTTP listen port (default: 8080)
+///   NODE_ID           — unique node identifier (default: "edge-1")
+///   WRITE_API_HOST    — write-api hostname (default: "write-api")
+///   WRITE_API_PORT    — write-api port (default: 8090)
+///   CACHE_CAPACITY    — LRU cache max entries (default: 1024)
+///   WAL_PATH          — path for degraded-mode write queue (default: /data/<nodeId>_write_queue.wal)
+
 #include <cstdlib>
-#include <iostream>
 #include <string>
-#include <httplib.h>
+
+#include <spdlog/spdlog.h>
+
+#include "edge/edgeServer.h"
 
 int main() {
-    int exitCode = 0;
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [edge] %v");
+    spdlog::set_level(spdlog::level::info);
+
+    outpost::edge::EdgeConfig config;
+
     const char* envPort = std::getenv("PORT");
-    int port = 8080;
-    if (envPort != nullptr) {
-        port = std::atoi(envPort);
+    config.port = envPort ? std::atoi(envPort) : 8080;
+
+    const char* envNodeId = std::getenv("NODE_ID");
+    config.nodeId = envNodeId ? envNodeId : "edge-1";
+
+    const char* envWriteApiHost = std::getenv("WRITE_API_HOST");
+    config.writeApiHost = envWriteApiHost ? envWriteApiHost : "write-api";
+
+    const char* envWriteApiPort = std::getenv("WRITE_API_PORT");
+    config.writeApiPort = envWriteApiPort ? std::atoi(envWriteApiPort) : 8090;
+
+    const char* envCacheCapacity = std::getenv("CACHE_CAPACITY");
+    config.cacheCapacity = envCacheCapacity ? std::stoul(envCacheCapacity) : 1024;
+
+    const char* envWalPath = std::getenv("WAL_PATH");
+    if (envWalPath) {
+        config.walPath = envWalPath;
     }
 
-    httplib::Server server;
+    spdlog::info("Starting Outpost Edge [{}] on port {} (write-api -> {}:{})", config.nodeId,
+                 config.port, config.writeApiHost, config.writeApiPort);
 
-    server.Get("/health", [](const httplib::Request& /*req*/, httplib::Response& res) {
-        res.status = 200;
-        res.set_content("{\"status\":\"healthy\",\"service\":\"edge\"}", "application/json");
-    });
+    outpost::edge::EdgeServer server(config);
+    server.run();
 
-    std::cout << "Starting Outpost Edge service on port " << port << std::endl;
-    bool success = server.listen("0.0.0.0", port);
-    if (!success) {
-        std::cerr << "Failed to start Edge service on port " << port << std::endl;
-        exitCode = 1;
-    }
-
-    return exitCode;
+    return 0;
 }

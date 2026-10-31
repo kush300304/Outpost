@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+outpost-build-guide.md
+outpost-daily-plan.md
+outpost-project-spec.md

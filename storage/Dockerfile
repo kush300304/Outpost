@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+RUN mkdir -p /data
 COPY --from=builder /app/build/storage/storage_server /app/storage_server
 
 EXPOSE 8091

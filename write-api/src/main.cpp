@@ -1,29 +1,49 @@
+/// @file main.cpp
+/// @brief Outpost Write-API Service — validates and proxies requests to storage.
+///
+/// Sits between edge nodes and the storage service. Edges call write-api,
+/// which validates the request and proxies it to storage. The storage service
+/// is never exposed directly to edges.
+///
+/// Configuration via environment variables:
+///   PORT          — listen port (default: 8090)
+///   STORAGE_HOST  — storage service hostname (default: "storage")
+///   STORAGE_PORT  — storage service port (default: 8091)
+
 #include <cstdlib>
-#include <iostream>
 #include <string>
+
 #include <httplib.h>
+#include <spdlog/spdlog.h>
+
+#include "writeApi/apiHandlers.h"
+#include "writeApi/storageClient.h"
 
 int main() {
-    int exitCode = 0;
-    const char* envPort = std::getenv("PORT");
-    int port = 8090;
-    if (envPort != nullptr) {
-        port = std::atoi(envPort);
-    }
+    spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [write-api] %v");
+    spdlog::set_level(spdlog::level::info);
 
+    const char* envPort = std::getenv("PORT");
+    int port = envPort ? std::atoi(envPort) : 8090;
+
+    const char* envStorageHost = std::getenv("STORAGE_HOST");
+    std::string storageHost = envStorageHost ? envStorageHost : "storage";
+
+    const char* envStoragePort = std::getenv("STORAGE_PORT");
+    int storagePort = envStoragePort ? std::atoi(envStoragePort) : 8091;
+
+    outpost::writeApi::StorageClient storageClient(storageHost, storagePort);
     httplib::Server server;
 
-    server.Get("/health", [](const httplib::Request& /*req*/, httplib::Response& res) {
-        res.status = 200;
-        res.set_content("{\"status\":\"healthy\",\"service\":\"write-api\"}", "application/json");
-    });
+    outpost::writeApi::registerHandlers(server, storageClient);
 
-    std::cout << "Starting Outpost Write-API service on port " << port << std::endl;
-    bool success = server.listen("0.0.0.0", port);
-    if (!success) {
-        std::cerr << "Failed to start Write-API service on port " << port << std::endl;
-        exitCode = 1;
+    spdlog::info("Starting Outpost Write-API service on port {} (storage -> {}:{})", port,
+                 storageHost, storagePort);
+
+    if (!server.listen("0.0.0.0", port)) {
+        spdlog::error("Failed to bind to port {}", port);
+        return 1;
     }
 
-    return exitCode;
+    return 0;
 }

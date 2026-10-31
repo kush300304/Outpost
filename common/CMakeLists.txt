@@ -14,3 +14,14 @@ target_link_libraries(outpost_common PUBLIC
     nlohmann_json::nlohmann_json
     spdlog::spdlog
 )
+
+if(BUILD_TESTING)
+    add_executable(common_tests
+        tests/testWal.cpp
+    )
+    target_link_libraries(common_tests PRIVATE
+        outpost_common
+        GTest::gtest_main
+    )
+    add_test(NAME common_tests COMMAND common_tests)
+endif()
