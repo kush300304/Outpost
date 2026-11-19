@@ -1,5 +1,5 @@
 /// @file main.cpp
-/// @brief Outpost edge service: caching proxy with degraded mode.
+/// @brief Outpost edge service: caching proxy with circuit breaker and degraded mode.
 ///
 /// Configuration via environment variables:
 ///   PORT            HTTP listen port (default 8081)
@@ -8,7 +8,13 @@
 ///   WRITE_API_PORT  write-api port (default 9090)
 ///   CACHE_CAPACITY  LRU cache max entries (default 1024)
 ///   WAL_PATH        degraded-mode write queue (default /data/<nodeId>_write_queue.wal)
+///   WAL_FSYNC       "0" disables fsync per queued write (default "1")
+///   BREAKER_FAILURE_THRESHOLD  consecutive failures that open the breaker (default 3)
+///   BREAKER_RESET_TIMEOUT_MS   OPEN time before the half-open probe (default 5000)
+///   HEALTH_CHECK_INTERVAL_MS   time between write-api health checks (default 1000)
+///   ORIGIN_TIMEOUT_MS          connect/read timeout for write-api calls (default 2000)
 
+#include <chrono>
 #include <cstdlib>
 #include <string>
 
@@ -32,6 +38,13 @@ int main() {
     config.writeApiPort = std::stoi(env("WRITE_API_PORT", "9090"));
     config.cacheCapacity = std::stoul(env("CACHE_CAPACITY", "1024"));
     config.walPath = env("WAL_PATH", "");
+    config.walFsync = env("WAL_FSYNC", "1") != "0";
+    config.breakerFailureThreshold = std::stoi(env("BREAKER_FAILURE_THRESHOLD", "3"));
+    config.breakerResetTimeout =
+        std::chrono::milliseconds(std::stol(env("BREAKER_RESET_TIMEOUT_MS", "5000")));
+    config.healthCheckInterval =
+        std::chrono::milliseconds(std::stol(env("HEALTH_CHECK_INTERVAL_MS", "1000")));
+    config.originTimeout = std::chrono::milliseconds(std::stol(env("ORIGIN_TIMEOUT_MS", "2000")));
 
     outpost::edge::EdgeServer server(config);
     bool served = server.bind() > 0 && server.serve();

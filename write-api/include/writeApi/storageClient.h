@@ -7,7 +7,6 @@
 /// get/put operations that serialize to/from JSON.
 
 #include <cstdint>
-#include <optional>
 #include <string>
 
 namespace outpost {
@@ -33,8 +32,9 @@ public:
 
     /// @brief Retrieve a value from the storage service.
     /// @param key The key to look up.
-    /// @return The value if found, or std::nullopt if 404 or error.
-    std::optional<std::string> get(const std::string& key);
+    /// @return httpStatus 200 with the storage body, 404 when absent, another status on a storage
+    ///         error, or 0 with errorMessage when storage could not be reached.
+    StorageResponse get(const std::string& key);
 
     /// @brief Store a versioned key-value pair in the storage service.
     /// @param key      The key.

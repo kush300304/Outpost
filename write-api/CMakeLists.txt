@@ -25,6 +25,7 @@ if(BUILD_TESTING)
     )
     target_link_libraries(write_api_tests PRIVATE
         write_api_lib
+        storage_lib
         GTest::gtest_main
     )
     add_test(NAME write_api_tests COMMAND write_api_tests)

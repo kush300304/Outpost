@@ -17,29 +17,26 @@ OriginClient::OriginClient(const std::string& host, int port, std::chrono::milli
     spdlog::info("OriginClient configured: {}:{}", host_, port_);
 }
 
-std::optional<std::string> OriginClient::get(const std::string& key) {
+OriginResponse OriginClient::get(const std::string& key) {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
 
-    std::optional<std::string> value;
+    OriginResponse response;
     auto res = cli.Get("/key/" + key);
     if (!res) {
         ++failedRequests_;
-        spdlog::error("OriginClient GET /key/{}: connection failed ({})", key,
-                      httplib::to_string(res.error()));
-    } else if (res->status == 200) {
-        json parsed = json::parse(res->body, nullptr, false);
-        if (parsed.is_object() && parsed.contains("value") && parsed["value"].is_string()) {
-            value = parsed["value"].get<std::string>();
-        } else {
-            spdlog::error("OriginClient GET /key/{}: malformed response body", key);
-        }
-    } else if (res->status != 404) {
-        ++failedRequests_;
+        response.errorMessage =
+            "Connection failed: " + std::string(httplib::to_string(res.error()));
+        spdlog::error("OriginClient GET /key/{}: {}", key, response.errorMessage);
+    } else {
+        response.httpStatus = res->status;
+        response.body = res->body;
+        response.success = res->status == 200;
+        failedRequests_ += (res->status == 200 || res->status == 404) ? 0 : 1;
     }
-    return value;
+    return response;
 }
 
 OriginResponse OriginClient::put(const std::string& key, const std::string& value,

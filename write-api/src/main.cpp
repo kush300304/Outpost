@@ -1,14 +1,12 @@
 /// @file main.cpp
-/// @brief Outpost Write-API Service — validates and proxies requests to storage.
+/// @brief Outpost write-api service: validates writes and proxies reads and writes to storage.
 ///
-/// Sits between edge nodes and the storage service. Edges call write-api,
-/// which validates the request and proxies it to storage. The storage service
-/// is never exposed directly to edges.
+/// Edges call write-api; write-api is the only client of the storage service.
 ///
 /// Configuration via environment variables:
-///   PORT          — listen port (default: 8090)
-///   STORAGE_HOST  — storage service hostname (default: "storage")
-///   STORAGE_PORT  — storage service port (default: 8091)
+///   PORT          listen port (default 9090)
+///   STORAGE_HOST  storage service hostname (default "storage")
+///   STORAGE_PORT  storage service port (default 9091)
 
 #include <cstdlib>
 #include <string>
@@ -23,27 +21,23 @@ int main() {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [write-api] %v");
     spdlog::set_level(spdlog::level::info);
 
-    const char* envPort = std::getenv("PORT");
-    int port = envPort ? std::atoi(envPort) : 8090;
-
-    const char* envStorageHost = std::getenv("STORAGE_HOST");
-    std::string storageHost = envStorageHost ? envStorageHost : "storage";
-
-    const char* envStoragePort = std::getenv("STORAGE_PORT");
-    int storagePort = envStoragePort ? std::atoi(envStoragePort) : 8091;
+    auto env = [](const char* name, const std::string& fallback) {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string(value) : fallback;
+    };
+    int port = std::stoi(env("PORT", "9090"));
+    std::string storageHost = env("STORAGE_HOST", "storage");
+    int storagePort = std::stoi(env("STORAGE_PORT", "9091"));
 
     outpost::writeApi::StorageClient storageClient(storageHost, storagePort);
     httplib::Server server;
-
     outpost::writeApi::registerHandlers(server, storageClient);
 
-    spdlog::info("Starting Outpost Write-API service on port {} (storage -> {}:{})", port,
-                 storageHost, storagePort);
-
-    if (!server.listen("0.0.0.0", port)) {
+    spdlog::info("Starting write-api on port {} (storage -> {}:{})", port, storageHost,
+                 storagePort);
+    bool listened = server.listen("0.0.0.0", port);
+    if (!listened) {
         spdlog::error("Failed to bind to port {}", port);
-        return 1;
     }
-
-    return 0;
+    return listened ? 0 : 1;
 }

@@ -16,25 +16,23 @@ StorageClient::StorageClient(const std::string& host, int port) : host_(host), p
     spdlog::info("StorageClient configured: {}:{}", host_, port_);
 }
 
-std::optional<std::string> StorageClient::get(const std::string& key) {
+StorageResponse StorageClient::get(const std::string& key) {
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
 
-    std::optional<std::string> value;
+    StorageResponse response;
     auto res = cli.Get("/key/" + key);
     if (!res) {
-        spdlog::error("StorageClient GET /key/{}: connection failed ({})", key,
-                      httplib::to_string(res.error()));
-    } else if (res->status == 200) {
-        json parsed = json::parse(res->body, nullptr, false);
-        if (parsed.is_object() && parsed.contains("value") && parsed["value"].is_string()) {
-            value = parsed["value"].get<std::string>();
-        } else {
-            spdlog::error("StorageClient GET /key/{}: malformed response body", key);
-        }
+        response.errorMessage =
+            "Connection failed: " + std::string(httplib::to_string(res.error()));
+        spdlog::error("StorageClient GET /key/{}: {}", key, response.errorMessage);
+    } else {
+        response.httpStatus = res->status;
+        response.body = res->body;
+        response.success = res->status == 200;
     }
-    return value;
+    return response;
 }
 
 StorageResponse StorageClient::put(const std::string& key, const std::string& value,

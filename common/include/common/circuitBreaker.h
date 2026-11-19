@@ -1,29 +1,24 @@
 #pragma once
 
 /// @file circuitBreaker.h
-/// @brief Circuit breaker state machine (Closed → Open → Half-Open → Closed).
+/// @brief Circuit breaker state machine (CLOSED → OPEN → HALF_OPEN → CLOSED).
 ///
-/// Implements the circuit breaker pattern (Fowler / Netflix Hystrix):
+///   CLOSED     requests flow; failureThreshold consecutive failures → OPEN.
+///   OPEN       isAllowed() is false until resetTimeout has elapsed; the first isAllowed()
+///              after that moves to HALF_OPEN and admits exactly one probe.
+///   HALF_OPEN  no further probe is admitted while the probe is outstanding. recordSuccess()
+///              → CLOSED, recordFailure() → OPEN with a fresh timeout. A probe whose result
+///              is never recorded counts as lost after resetTimeout; one new probe is admitted.
 ///
-///   CLOSED    — normal operation, requests flow through.
-///               After `failureThreshold` consecutive failures → OPEN.
-///
-///   OPEN      — requests are rejected immediately (fail fast).
-///               After `resetTimeout` elapses → HALF_OPEN.
-///
-///   HALF_OPEN — one probe request is allowed through.
-///               If it succeeds → CLOSED.
-///               If it fails → back to OPEN.
-///
-/// This state machine drives the edge's degraded mode: when OPEN, edges
-/// serve stale cache and queue writes locally instead of calling the origin.
+/// Thread safety: all methods are serialized by one mutex. The transition callback runs after the
+/// mutex is released, so it may call back into the breaker.
 
-#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
-#include <string>
+#include <optional>
+#include <utility>
 
 namespace outpost {
 namespace common {
@@ -35,69 +30,74 @@ enum class BreakerState : uint8_t {
     HALF_OPEN = 2,
 };
 
-/// @brief Convert BreakerState to a human-readable string.
+/// @brief Human-readable name of a state ("CLOSED", "OPEN", "HALF_OPEN").
 inline const char* breakerStateToString(BreakerState state) {
-    switch (state) {
-        case BreakerState::CLOSED: return "CLOSED";
-        case BreakerState::OPEN: return "OPEN";
-        case BreakerState::HALF_OPEN: return "HALF_OPEN";
-        default: return "UNKNOWN";
+    const char* name = "HALF_OPEN";
+    if (state == BreakerState::CLOSED) {
+        name = "CLOSED";
+    } else if (state == BreakerState::OPEN) {
+        name = "OPEN";
     }
+    return name;
 }
 
 /// @brief Configuration for a circuit breaker instance.
 struct CircuitBreakerConfig {
-    int failureThreshold = 5;        ///< Consecutive failures to trip the breaker.
-    int resetTimeoutSec = 30;        ///< Seconds to wait before half-open probe.
-    int halfOpenMaxProbes = 1;       ///< Number of probes allowed in half-open state.
+    int failureThreshold = 5;                       ///< Consecutive failures that open it.
+    std::chrono::milliseconds resetTimeout{30000};  ///< OPEN time before a probe; probe timeout.
 };
 
-/// @brief Thread-safe circuit breaker state machine.
+/// @brief Thread-safe circuit breaker with a single half-open probe.
 class CircuitBreaker {
 public:
+    using TransitionCallback = std::function<void(BreakerState from, BreakerState to)>;
+
     explicit CircuitBreaker(const CircuitBreakerConfig& config = {});
 
-    /// @brief Check if a request should be allowed through.
+    /// @brief Whether a call may go to the protected service now.
     ///
-    /// In CLOSED state: always returns true.
-    /// In OPEN state: returns false (fail fast). If enough time has passed,
-    ///   transitions to HALF_OPEN.
-    /// In HALF_OPEN state: returns true for up to `halfOpenMaxProbes` probes.
+    /// CLOSED: always true. OPEN: false until resetTimeout elapses, then moves to HALF_OPEN and
+    /// returns true once (the probe). HALF_OPEN: false while the probe is outstanding; true once
+    /// more if the probe has been outstanding for resetTimeout.
     bool isAllowed();
 
-    /// @brief Record a successful request/health check.
-    ///
-    /// Resets consecutive failure count. If in HALF_OPEN, transitions to CLOSED.
+    /// @brief Record a successful call. Resets the failure count; HALF_OPEN → CLOSED.
     void recordSuccess();
 
-    /// @brief Record a failed request/health check.
-    ///
-    /// Increments consecutive failure count. If threshold is reached in CLOSED,
-    /// transitions to OPEN. If in HALF_OPEN, transitions back to OPEN.
+    /// @brief Record a failed call. CLOSED → OPEN at the threshold; HALF_OPEN → OPEN.
     void recordFailure();
 
-    /// @brief Return the current state of the breaker.
+    /// @brief Current state.
     BreakerState state() const;
 
-    /// @brief Return the current consecutive failure count.
+    /// @brief Current consecutive failure count.
     int consecutiveFailures() const;
 
-    /// @brief Register a callback for state transitions (for logging/metrics).
-    using TransitionCallback = std::function<void(BreakerState from, BreakerState to)>;
+    /// @brief The configuration this breaker was built with.
+    const CircuitBreakerConfig& config() const;
+
+    /// @brief Register the callback invoked after every state change.
     void onTransition(TransitionCallback callback);
 
-    /// @brief Force the breaker to a specific state (for testing).
+    /// @brief Force a state (testing and operations).
     void forceState(BreakerState newState);
 
 private:
-    void transition(BreakerState newState);
+    using Clock = std::chrono::steady_clock;
+    using Transition = std::pair<BreakerState, BreakerState>;
 
-    CircuitBreakerConfig config_;
+    /// @brief Change state under the lock; returns the transition when the state changed.
+    std::optional<Transition> setState(BreakerState newState, Clock::time_point now);
+
+    /// @brief Invoke the callback for a transition; must be called without the lock held.
+    void notify(const std::optional<Transition>& transition, const TransitionCallback& callback);
+
+    const CircuitBreakerConfig config_;
     mutable std::mutex mutex_;
     BreakerState state_ = BreakerState::CLOSED;
     int consecutiveFailures_ = 0;
-    std::chrono::steady_clock::time_point openedAt_;
-    int halfOpenProbes_ = 0;
+    Clock::time_point openedAt_;
+    Clock::time_point probeStartedAt_;
     TransitionCallback transitionCallback_;
 };
 

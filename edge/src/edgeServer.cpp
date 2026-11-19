@@ -16,27 +16,25 @@ using namespace std::chrono;
 namespace outpost {
 namespace edge {
 
-namespace {
-
-const char* breakerName(int state) {
-    const char* names[] = {"CLOSED", "OPEN", "HALF_OPEN"};
-    return names[state];
-}
-
-}  // namespace
-
 EdgeServer::EdgeServer(const EdgeConfig& config)
     : config_(config),
       originClient_(config.writeApiHost, config.writeApiPort, config.originTimeout),
       cache_(config.cacheCapacity),
       writeQueue_(config.walPath.empty() ? "/data/" + config.nodeId + "_write_queue.wal"
                                          : config.walPath,
-                  config.walFsync) {
+                  config.walFsync),
+      breaker_(common::CircuitBreakerConfig{config.breakerFailureThreshold,
+                                            config.breakerResetTimeout}) {
+    breaker_.onTransition([this](common::BreakerState from, common::BreakerState to) {
+        spdlog::warn("[{}] Circuit breaker {} -> {}", config_.nodeId,
+                     common::breakerStateToString(from), common::breakerStateToString(to));
+    });
+
     server_.Get("/health", [this](const httplib::Request& /*req*/, httplib::Response& res) {
         json body = {{"status", "healthy"},
                      {"service", "edge"},
                      {"nodeId", config_.nodeId},
-                     {"breakerState", breakerName(static_cast<int>(breakerState_.load()))}};
+                     {"breakerState", common::breakerStateToString(breaker_.state())}};
         res.set_content(body.dump(), "application/json");
     });
 
@@ -47,25 +45,39 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
 
         json body;
         std::string cacheHeader = "MISS";
+        bool closed = breaker_.state() == common::BreakerState::CLOSED;
         auto cached = cache_.get(key);
         if (cached.has_value()) {
-            cacheHeader = "HIT";
+            cacheHeader = closed ? "HIT" : "STALE";
+            staleServes_.fetch_add(closed ? 0 : 1, std::memory_order_relaxed);
             body = {{"key", key}, {"value", cached.value()}};
-        } else if (breakerState_.load() == BreakerState::OPEN) {
-            staleServes_.fetch_add(1, std::memory_order_relaxed);
+        } else if (!closed) {
             res.status = 503;
-            cacheHeader = "MISS_DEGRADED";
-            body = {{"error", "service_degraded"},
-                    {"message", "Origin unavailable and key not in cache"},
+            body = {{"error", "origin_unavailable"},
+                    {"message", "origin unavailable and key not cached at this edge"},
                     {"key", key}};
         } else {
-            auto value = originClient_.get(key);
-            if (value.has_value()) {
-                cache_.put(key, value.value());
-                body = {{"key", key}, {"value", value.value()}};
-            } else {
+            OriginResponse origin = originClient_.get(key);
+            json parsed = json::parse(origin.body, nullptr, false);
+            bool found = origin.httpStatus == 200 && parsed.is_object() &&
+                         parsed.contains("value") && parsed["value"].is_string();
+            if (found) {
+                breaker_.recordSuccess();
+                cache_.put(key, parsed["value"].get<std::string>());
+                body = {{"key", key}, {"value", parsed["value"]}};
+            } else if (origin.httpStatus == 404) {
+                breaker_.recordSuccess();
                 res.status = 404;
                 body = {{"error", "not_found"}, {"key", key}};
+            } else {
+                breaker_.recordFailure();
+                res.status = 503;
+                body = {{"error", "origin_unavailable"},
+                        {"message", origin.errorMessage.empty()
+                                        ? "origin returned HTTP " +
+                                              std::to_string(origin.httpStatus)
+                                        : origin.errorMessage},
+                        {"key", key}};
             }
         }
         res.set_header("X-Cache", cacheHeader);
@@ -108,17 +120,20 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             queued.writerId = config_.nodeId;
 
             bool forwarded = false;
-            if (breakerState_.load() != BreakerState::OPEN) {
+            bool rejected = false;
+            if (breaker_.state() == common::BreakerState::CLOSED) {
                 OriginResponse originRes = originClient_.put(key, value, version, config_.nodeId);
                 forwarded = originRes.success;
-                if (forwarded) {
-                    consecutiveFailures_.store(0, std::memory_order_relaxed);
+                rejected = originRes.httpStatus >= 400 && originRes.httpStatus < 500;
+                if (forwarded || rejected) {
+                    breaker_.recordSuccess();
+                    res.status = originRes.httpStatus;
                     content = originRes.body;
                 } else {
-                    consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
+                    breaker_.recordFailure();
                 }
             }
-            if (!forwarded) {
+            if (!forwarded && !rejected) {
                 writeQueue_.append(queued);
                 queuedWrites_.fetch_add(1, std::memory_order_relaxed);
                 res.status = 202;
@@ -128,8 +143,10 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                                 {"message", "origin unavailable, write queued at the edge"}})
                               .dump();
             }
-            cache_.put(key, value);
-            res.set_header("X-Write-Mode", forwarded ? "DIRECT" : "QUEUED");
+            if (!rejected) {
+                cache_.put(key, value);
+                res.set_header("X-Write-Mode", forwarded ? "DIRECT" : "QUEUED");
+            }
         }
         res.set_header("X-Node", config_.nodeId);
         res.set_content(content, "application/json");
@@ -148,8 +165,10 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
               {"evictions", cacheStats.evictions},
               {"hitRate", cacheStats.hitRate()}}},
             {"circuitBreaker",
-             {{"state", breakerName(static_cast<int>(breakerState_.load()))},
-              {"consecutiveFailures", consecutiveFailures_.load()}}},
+             {{"state", common::breakerStateToString(breaker_.state())},
+              {"consecutiveFailures", breaker_.consecutiveFailures()},
+              {"failureThreshold", config_.breakerFailureThreshold},
+              {"resetTimeoutMs", config_.breakerResetTimeout.count()}}},
             {"writeQueue", {{"pending", writeQueue_.size()}}},
             {"requests",
              {{"total", totalRequests_.load()},
@@ -204,8 +223,8 @@ void EdgeServer::stop() {
     }
     stopSignal_.notify_all();
     server_.stop();
-    if (maintenanceThread_.joinable() &&
-        maintenanceThread_.get_id() != std::this_thread::get_id()) {
+    std::lock_guard<std::mutex> joinLock(joinMutex_);
+    if (maintenanceThread_.joinable()) {
         maintenanceThread_.join();
     }
 }
@@ -216,29 +235,17 @@ void EdgeServer::maintenanceLoop() {
     std::unique_lock<std::mutex> lock(stopMutex_);
     while (!stopSignal_.wait_for(lock, config_.healthCheckInterval, [this] { return stopping_; })) {
         lock.unlock();
-        bool healthy = originClient_.healthCheck();
-        BreakerState state = breakerState_.load();
-        int64_t nowMs = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-        if (healthy) {
-            consecutiveFailures_.store(0);
-            if (state != BreakerState::CLOSED) {
-                spdlog::info("[{}] Origin healthy — closing circuit breaker", config_.nodeId);
-                breakerState_.store(BreakerState::CLOSED);
-            }
-        } else {
-            int failures = consecutiveFailures_.fetch_add(1) + 1;
-            spdlog::warn("[{}] Health check failed (consecutive: {})", config_.nodeId, failures);
-            if (state == BreakerState::CLOSED && failures >= config_.breakerFailureThreshold) {
-                spdlog::error("[{}] Circuit breaker OPENED after {} consecutive failures",
-                              config_.nodeId, failures);
-                breakerState_.store(BreakerState::OPEN);
-                breakerOpenedAtMs_.store(nowMs);
-            } else if (state == BreakerState::OPEN &&
-                       nowMs - breakerOpenedAtMs_.load() >= config_.breakerResetTimeout.count()) {
-                breakerState_.store(BreakerState::HALF_OPEN);
+        if (breaker_.isAllowed()) {
+            bool healthy = originClient_.healthCheck();
+            if (healthy) {
+                breaker_.recordSuccess();
+            } else {
+                breaker_.recordFailure();
+                spdlog::warn("[{}] Health check failed (consecutive: {})", config_.nodeId,
+                             breaker_.consecutiveFailures());
             }
         }
-        if (breakerState_.load() == BreakerState::CLOSED && writeQueue_.size() > 0) {
+        if (breaker_.state() == common::BreakerState::CLOSED && writeQueue_.size() > 0) {
             // Drain: send queued writes in order with their original versions and discard
             // exactly the prefix the origin resolved; writes queued meanwhile stay queued.
             std::vector<common::WalEntry> entries = writeQueue_.replay();
@@ -262,7 +269,7 @@ void EdgeServer::maintenanceLoop() {
                                   config_.nodeId, entry.key, result.httpStatus);
                 } else {
                     originFailed = true;
-                    consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
+                    breaker_.recordFailure();
                 }
                 ++index;
             }
