@@ -9,7 +9,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <optional>
 #include <string>
 
 namespace outpost {
@@ -31,10 +30,10 @@ public:
     /// @param timeout Connect and read timeout for every call.
     OriginClient(const std::string& host, int port, std::chrono::milliseconds timeout);
 
-    /// @brief Fetch a value from the origin via write-api.
-    /// @param key The key to look up.
-    /// @return The value if found, or std::nullopt on 404/error.
-    std::optional<std::string> get(const std::string& key);
+    /// @brief Fetch a key from the origin via write-api.
+    /// @return httpStatus 200 with the JSON body, 404 when absent, another status on an origin
+    ///         error, or 0 with errorMessage when write-api could not be reached.
+    OriginResponse get(const std::string& key);
 
     /// @brief Store a versioned key-value pair at the origin via write-api.
     /// @param key      The key.

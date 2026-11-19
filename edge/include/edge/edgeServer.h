@@ -9,10 +9,19 @@
 ///   PUT  /key/:id         → versioned write, forwarded to write-api or queued in the edge WAL
 ///   GET  /debug/stats     → cache, breaker and queue statistics
 ///
-/// A background maintenance thread health-checks write-api every healthCheckInterval, drives the
-/// breaker state and, whenever the breaker is CLOSED and writes are queued, drains the queue: each
-/// queued write is sent in order with its original version, and only the prefix the origin
-/// resolved is removed from the WAL, so writes queued during a drain are never lost.
+/// Failure detection: a common::CircuitBreaker guards write-api. A background maintenance thread
+/// health-checks write-api whenever breaker.isAllowed() says so: every healthCheckInterval while
+/// CLOSED, never while OPEN, and exactly once (the probe) in HALF_OPEN. Request handlers never
+/// call isAllowed(); they read the state and record origin successes and failures.
+///
+/// Reads: a cached key is served as HIT while CLOSED and as STALE otherwise. An uncached key is
+/// fetched from write-api while CLOSED (MISS); with the breaker not CLOSED, or the fetch failing,
+/// the edge answers 503.
+///
+/// Writes are forwarded while CLOSED; otherwise, or when write-api fails, they are queued in the
+/// edge WAL (202). Whenever the breaker is CLOSED and writes are queued, the maintenance thread
+/// drains the queue: each write is sent in order with its original version, and only the prefix
+/// write-api resolved is removed from the WAL, so writes queued during a drain are never lost.
 
 #include <atomic>
 #include <chrono>
@@ -25,6 +34,7 @@
 
 #include <httplib.h>
 
+#include "common/circuitBreaker.h"
 #include "common/lruCache.h"
 #include "common/wal.h"
 #include "edge/originClient.h"
@@ -71,8 +81,6 @@ public:
     void stop();
 
 private:
-    enum class BreakerState { CLOSED, OPEN, HALF_OPEN };
-
     /// @brief Maintenance thread body: health checks, breaker state and queue draining.
     void maintenanceLoop();
 
@@ -81,6 +89,7 @@ private:
     OriginClient originClient_;
     common::LruCache cache_;
     common::WriteAheadLog writeQueue_;
+    common::CircuitBreaker breaker_;
 
     std::thread maintenanceThread_;
     std::mutex joinMutex_;  ///< Serializes concurrent stop() calls joining the thread.
@@ -97,10 +106,6 @@ private:
     std::atomic<uint64_t> rejectedWrites_{0};
     std::atomic<uint64_t> rateLimited_{0};
     std::atomic<uint64_t> lastVersion_{0};  ///< Last stamped write version (µs since epoch).
-
-    std::atomic<BreakerState> breakerState_{BreakerState::CLOSED};
-    std::atomic<int> consecutiveFailures_{0};
-    std::atomic<int64_t> breakerOpenedAtMs_{0};
 };
 
 }  // namespace edge

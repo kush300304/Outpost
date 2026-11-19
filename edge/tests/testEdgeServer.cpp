@@ -85,7 +85,17 @@ public:
     FakeOrigin() {
         http_.server.Get("/health", [this](const httplib::Request&, httplib::Response& res) {
             ++healthChecks;
+            std::this_thread::sleep_for(std::chrono::milliseconds(healthDelayMs.load()));
             res.status = healthy ? 200 : 503;
+        });
+        http_.server.Get(R"(/key/(.+))", [this](const httplib::Request& req,
+                                                httplib::Response& res) {
+            ++keyGets;
+            std::string key = req.matches[1].str();
+            res.status = getStatus ? getStatus(key) : 404;
+            json body = res.status == 200 ? json({{"key", key}, {"value", "origin-" + key}})
+                                          : json({{"error", "not_found"}});
+            res.set_content(body.dump(), "application/json");
         });
         http_.server.Put(R"(/key/(.+))", [this](const httplib::Request& req,
                                                 httplib::Response& res) {
@@ -128,6 +138,9 @@ public:
 
     std::atomic<bool> healthy{true};
     std::atomic<int> healthChecks{0};
+    std::atomic<int> healthDelayMs{0};
+    std::atomic<int> keyGets{0};
+    std::function<int(const std::string& key)> getStatus;
     std::function<int(const std::string& key, int attempt)> putStatus;
     std::function<void(const std::string& key)> onPut;
 
@@ -177,6 +190,10 @@ public:
     json stats() const {
         auto res = client().Get("/debug/stats");
         return res ? json::parse(res->body, nullptr, false) : json();
+    }
+    std::string breakerState() const {
+        json body = stats();
+        return body.is_object() ? body["circuitBreaker"]["state"].get<std::string>() : "";
     }
     std::size_t pending() const {
         json body = stats();
@@ -308,4 +325,95 @@ TEST_F(EdgeServerTest, ReplayAfterCrashBeforeDiscardIsIdempotent) {
     EXPECT_TRUE(waitUntil([&] { return origin.store.counters().duplicates == 1; }));
     EXPECT_EQ(origin.store.counters().applied, 1u);
     EXPECT_EQ(origin.store.get("k")->value, "v");
+}
+
+// ── Phase B: failure detection ──────────────────────────────────────────
+
+TEST_F(EdgeServerTest, BreakerOpensAfterThresholdFailedHealthChecks) {
+    FakeOrigin origin;
+    origin.healthy = false;
+    RunningEdge edge(config(origin.port()));
+    EXPECT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+}
+
+TEST_F(EdgeServerTest, OpenBreakerSendsNoOriginTrafficUntilResetTimeout) {
+    FakeOrigin origin;
+    origin.healthy = false;
+    EdgeConfig cfg = config(origin.port());
+    cfg.breakerResetTimeout = 600ms;
+    RunningEdge edge(cfg);
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+
+    int healthChecksAtOpen = origin.healthChecks.load();
+    auto res = edge.client().Get("/key/uncached");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 503);
+    std::this_thread::sleep_for(300ms);
+    EXPECT_EQ(origin.healthChecks.load(), healthChecksAtOpen);
+    EXPECT_EQ(origin.keyGets.load(), 0);
+}
+
+TEST_F(EdgeServerTest, HalfOpenAdmitsExactlyOneProbeBeforeClosing) {
+    FakeOrigin origin;
+    origin.healthy = false;
+    EdgeConfig cfg = config(origin.port());
+    cfg.breakerResetTimeout = 200ms;
+    RunningEdge edge(cfg);
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+    auto openedAt = std::chrono::steady_clock::now();
+    int healthChecksAtOpen = origin.healthChecks.load();
+    origin.healthDelayMs = 300;
+    origin.healthy = true;
+
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "HALF_OPEN"; }, 1000ms));
+    for (int i = 0; i < 5; ++i) {
+        auto res = edge.client().Get("/key/during-probe-" + std::to_string(i));
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res->status, 503);
+    }
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "CLOSED"; }, 2000ms));
+    EXPECT_GE(std::chrono::steady_clock::now() - openedAt, 200ms);
+    EXPECT_EQ(origin.healthChecks.load(), healthChecksAtOpen + 1);
+    EXPECT_EQ(origin.keyGets.load(), 0);
+}
+
+TEST_F(EdgeServerTest, CachedReadWhileBreakerOpenIsStale) {
+    FakeOrigin origin;
+    RunningEdge edge(config(origin.port()));
+    auto put = edge.client().Put("/key/k", R"({"value":"cached"})", "application/json");
+    ASSERT_TRUE(put);
+    ASSERT_EQ(put->status, 200);
+
+    origin.healthy = false;
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+    auto res = edge.client().Get("/key/k");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_EQ(res->get_header_value("X-Cache"), "STALE");
+    EXPECT_EQ(json::parse(res->body)["value"], "cached");
+}
+
+TEST_F(EdgeServerTest, UncachedReadWhenOriginFailsIs503NotNotFound) {
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 502; };
+    RunningEdge edge(config(origin.port()));
+    auto res = edge.client().Get("/key/k");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 503);
+    EXPECT_EQ(res->get_header_value("X-Cache"), "MISS");
+}
+
+TEST_F(EdgeServerTest, MissingKeyIs404AndFoundKeyIsMissThenHit) {
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string& key) { return key == "present" ? 200 : 404; };
+    RunningEdge edge(config(origin.port()));
+    auto absent = edge.client().Get("/key/absent");
+    ASSERT_TRUE(absent);
+    EXPECT_EQ(absent->status, 404);
+    auto first = edge.client().Get("/key/present");
+    auto second = edge.client().Get("/key/present");
+    ASSERT_TRUE(first && second);
+    EXPECT_EQ(first->get_header_value("X-Cache"), "MISS");
+    EXPECT_EQ(second->get_header_value("X-Cache"), "HIT");
+    EXPECT_EQ(origin.keyGets.load(), 2);
 }
