@@ -83,6 +83,7 @@ private:
     common::WriteAheadLog writeQueue_;
 
     std::thread maintenanceThread_;
+    std::mutex joinMutex_;  ///< Serializes concurrent stop() calls joining the thread.
     std::mutex stopMutex_;
     std::condition_variable stopSignal_;
     bool stopping_ = false;

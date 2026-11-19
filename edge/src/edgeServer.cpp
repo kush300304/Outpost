@@ -204,8 +204,8 @@ void EdgeServer::stop() {
     }
     stopSignal_.notify_all();
     server_.stop();
-    if (maintenanceThread_.joinable() &&
-        maintenanceThread_.get_id() != std::this_thread::get_id()) {
+    std::lock_guard<std::mutex> joinLock(joinMutex_);
+    if (maintenanceThread_.joinable()) {
         maintenanceThread_.join();
     }
 }
