@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "common/urlEncode.h"
+
 using json = nlohmann::json;
 
 namespace outpost {
@@ -18,11 +20,12 @@ StorageClient::StorageClient(const std::string& host, int port) : host_(host), p
 
 StorageResponse StorageClient::get(const std::string& key) {
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
 
     StorageResponse response;
-    auto res = cli.Get("/key/" + key);
+    auto res = cli.Get("/key/" + common::encodePathSegment(key));
     if (!res) {
         response.errorMessage =
             "Connection failed: " + std::string(httplib::to_string(res.error()));
@@ -38,11 +41,12 @@ StorageResponse StorageClient::get(const std::string& key) {
 StorageResponse StorageClient::put(const std::string& key, const std::string& value,
                                    uint64_t version, const std::string& writerId) {
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
 
     json body = {{"value", value}, {"version", version}, {"writerId", writerId}};
-    auto res = cli.Put("/key/" + key, body.dump(), "application/json");
+    auto res = cli.Put("/key/" + common::encodePathSegment(key), body.dump(), "application/json");
 
     StorageResponse response;
     if (!res) {
@@ -63,6 +67,7 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
 
 bool StorageClient::isHealthy() {
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(1);
     cli.set_read_timeout(1);
     auto res = cli.Get("/health");

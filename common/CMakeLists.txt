@@ -5,6 +5,7 @@ add_library(outpost_common
     src/tokenBucket.cpp
     src/circuitBreaker.cpp
     src/wal.cpp
+    src/urlEncode.cpp
 )
 
 target_include_directories(outpost_common PUBLIC
@@ -17,6 +18,7 @@ target_link_libraries(outpost_common PUBLIC Threads::Threads)
 if(BUILD_TESTING)
     add_executable(common_tests
         tests/testWal.cpp
+        tests/testUrlEncode.cpp
     )
     target_link_libraries(common_tests PRIVATE
         outpost_common

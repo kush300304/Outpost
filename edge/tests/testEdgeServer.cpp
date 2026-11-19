@@ -417,3 +417,27 @@ TEST_F(EdgeServerTest, MissingKeyIs404AndFoundKeyIsMissThenHit) {
     EXPECT_EQ(second->get_header_value("X-Cache"), "HIT");
     EXPECT_EQ(origin.keyGets.load(), 2);
 }
+
+// ── Phase C: wiring ─────────────────────────────────────────────────────
+
+TEST_F(EdgeServerTest, KeyWithReservedCharactersRoundTripsToStorage) {
+    RealOrigin origin;
+    const std::string key = "a?b c/%#+&=";
+    const std::string path = "/key/a%3Fb%20c%2F%25%23%2B%26%3D";
+    {
+        RunningEdge edge(config(origin.port()));
+        auto put = edge.client().Put(path, R"({"value":"tricky"})", "application/json");
+        ASSERT_TRUE(put);
+        EXPECT_EQ(put->status, 200);
+    }
+    auto stored = origin.store.get(key);
+    ASSERT_TRUE(stored.has_value()) << "storage did not receive the exact key";
+    EXPECT_EQ(stored->value, "tricky");
+
+    RunningEdge coldEdge(config(origin.port()));
+    auto get = coldEdge.client().Get(path);
+    ASSERT_TRUE(get);
+    EXPECT_EQ(get->status, 200);
+    EXPECT_EQ(get->get_header_value("X-Cache"), "MISS");
+    EXPECT_EQ(json::parse(get->body)["value"], "tricky");
+}
