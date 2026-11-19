@@ -7,8 +7,11 @@
 
 #include "common/wal.h"
 
+#include <sys/resource.h>
+
 #include <algorithm>
 #include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -203,7 +206,8 @@ TEST(WalTest, TruncateRemovesAllEntries) {
 
     auto entries = wal.replay();
     EXPECT_TRUE(entries.empty());
-    EXPECT_EQ(wal.currentSequence(), 0u);
+    EXPECT_EQ(wal.size(), 0u);
+    EXPECT_EQ(wal.currentSequence(), 2u);
 }
 
 TEST(WalTest, CanAppendAfterTruncate) {
@@ -213,7 +217,7 @@ TEST(WalTest, CanAppendAfterTruncate) {
     wal.truncate();
 
     uint64_t seq = wal.appendPut("new", "data");
-    EXPECT_EQ(seq, 1u);  // Sequence resets after truncate
+    EXPECT_EQ(seq, 2u);  // Sequence numbers keep increasing across truncate
 
     auto entries = wal.replay();
     ASSERT_EQ(entries.size(), 1u);
@@ -252,22 +256,87 @@ TEST(WalTest, LargeEntry) {
 
 // ── ReplayForEach callback ──────────────────────────────────────────────
 
-TEST(WalTest, ReplayForEachCanStopEarly) {
+TEST(WalTest, VersionAndWriterIdRoundTrip) {
+    TempWalFile tmp;
+    {
+        WriteAheadLog wal(tmp.path());
+        WalEntry entry;
+        entry.operation = WalOperation::PUT;
+        entry.key = "k";
+        entry.value = "v";
+        entry.version = 1234567890123ull;
+        entry.writerId = "edge-2";
+        wal.append(entry);
+    }
+    WriteAheadLog wal(tmp.path());
+    auto entries = wal.replay();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].version, 1234567890123ull);
+    EXPECT_EQ(entries[0].writerId, "edge-2");
+    EXPECT_EQ(entries[0].key, "k");
+    EXPECT_EQ(entries[0].value, "v");
+}
+
+TEST(WalTest, DiscardThroughKeepsEntriesAppendedAfterSnapshot) {
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path());
+    wal.appendPut("a", "1");
+    wal.appendPut("b", "2");
+    auto snapshot = wal.replay();
+    wal.appendPut("late", "3");  // arrives while the snapshot is being processed
+
+    std::size_t remaining = wal.discardThrough(snapshot.back().sequenceNumber);
+    EXPECT_EQ(remaining, 1u);
+    EXPECT_EQ(wal.size(), 1u);
+    auto entries = wal.replay();
+    ASSERT_EQ(entries.size(), 1u);
+    EXPECT_EQ(entries[0].key, "late");
+    EXPECT_EQ(entries[0].sequenceNumber, 3u);
+
+    EXPECT_EQ(wal.appendPut("next", "4"), 4u);
+    WriteAheadLog reopened(tmp.path());
+    EXPECT_EQ(reopened.replay().size(), 2u);
+}
+
+TEST(WalTest, RecoveryReportCountsTruncatedTail) {
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
         wal.appendPut("a", "1");
         wal.appendPut("b", "2");
-        wal.appendPut("c", "3");
     }
+    auto fullSize = fs::file_size(tmp.path());
+    fs::resize_file(tmp.path(), fullSize - 5);
+    WriteAheadLog wal(tmp.path());
+    auto report = wal.recoveryReport();
+    EXPECT_EQ(report.validRecords, 1u);
+    EXPECT_GT(report.truncatedBytes, 0u);
+    EXPECT_EQ(report.skippedBytes, 0u);
+    EXPECT_EQ(wal.size(), 1u);
+    EXPECT_LT(fs::file_size(tmp.path()), fullSize - 5);
+}
 
-    WriteAheadLog wal2(tmp.path());
-    int count = 0;
-    wal2.replayForEach([&count](const WalEntry& /*entry*/) {
-        ++count;
-        return count < 2;  // Stop after 2 entries
-    });
-    EXPECT_EQ(count, 2);
+TEST(WalTest, FailedAppendIsRolledBackAndLogStaysUsable) {
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path(), false);
+    wal.appendPut("a", "1");
+    auto sizeBefore = fs::file_size(tmp.path());
+
+    // Make the next large write fail with EFBIG by capping the process file-size limit.
+    std::signal(SIGXFSZ, SIG_IGN);
+    rlimit original{};
+    getrlimit(RLIMIT_FSIZE, &original);
+    rlimit capped = original;
+    capped.rlim_cur = static_cast<rlim_t>(sizeBefore + 16);
+    setrlimit(RLIMIT_FSIZE, &capped);
+    EXPECT_THROW(wal.appendPut("big", std::string(4096, 'x')), std::runtime_error);
+    setrlimit(RLIMIT_FSIZE, &original);
+
+    EXPECT_EQ(fs::file_size(tmp.path()), sizeBefore);
+    EXPECT_EQ(wal.appendPut("b", "2"), 2u);
+    auto entries = wal.replay();
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(entries[1].key, "b");
 }
 
 // ── CRC32 utility ───────────────────────────────────────────────────────
@@ -331,4 +400,59 @@ TEST(WalTest, ConcurrentAppendsDoNotCorruptLog) {
     auto uniqueEnd = std::unique(seqs.begin(), seqs.end());
     EXPECT_EQ(std::distance(seqs.begin(), uniqueEnd),
               static_cast<ptrdiff_t>(kThreads * kEntriesPerThread));
+}
+
+// ── Crash recovery ──────────────────────────────────────────────────────
+
+TEST(WalTest, TornTailThenAppendKeepsAllAcknowledgedWrites) {
+    TempWalFile tmp;
+    {
+        WriteAheadLog wal(tmp.path());
+        wal.appendPut("a", "1");
+        wal.appendPut("b", "2");
+        wal.appendPut("c", "3");
+    }
+    fs::resize_file(tmp.path(), fs::file_size(tmp.path()) - 3);
+    {
+        WriteAheadLog wal(tmp.path());
+        wal.appendPut("d", "4");
+        wal.appendPut("e", "5");
+    }
+    WriteAheadLog wal(tmp.path());
+    auto entries = wal.replay();
+    ASSERT_EQ(entries.size(), 4u);
+    EXPECT_EQ(entries[2].key, "d");
+    EXPECT_EQ(entries[3].key, "e");
+}
+
+TEST(WalTest, DamagedHeaderInMiddleKeepsLaterRecords) {
+    TempWalFile tmp;
+    std::uintmax_t secondRecordOffset = 0;
+    {
+        WriteAheadLog wal(tmp.path());
+        wal.appendPut("first", "1");
+        secondRecordOffset = fs::file_size(tmp.path());
+        wal.appendPut("second", "2");
+        wal.appendPut("third", "3");
+    }
+    {
+        std::fstream f(tmp.path(), std::ios::binary | std::ios::in | std::ios::out);
+        f.seekp(static_cast<std::streamoff>(secondRecordOffset));
+        const char damage[8] = {'\xFF', '\xFF', '\xFF', '\xFF', '\xFF', '\xFF', '\xFF', '\xFF'};
+        f.write(damage, sizeof(damage));
+    }
+    WriteAheadLog wal(tmp.path());
+    auto entries = wal.replay();
+    ASSERT_EQ(entries.size(), 2u);
+    EXPECT_EQ(entries[0].key, "first");
+    EXPECT_EQ(entries[1].key, "third");
+}
+
+TEST(WalTest, SequenceKeepsIncreasingAfterTruncate) {
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path());
+    wal.appendPut("a", "1");
+    wal.appendPut("b", "2");
+    wal.truncate();
+    EXPECT_EQ(wal.appendPut("c", "3"), 3u);
 }

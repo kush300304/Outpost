@@ -19,15 +19,14 @@ void KvStore::replayWal() {
     if (!wal_) return;
 
     std::size_t applied = 0;
-    wal_->replayForEach([this, &applied](const common::WalEntry& entry) {
+    for (const common::WalEntry& entry : wal_->replay()) {
         if (entry.operation == common::WalOperation::PUT) {
             data_[entry.key] = entry.value;
         } else if (entry.operation == common::WalOperation::DELETE) {
             data_.erase(entry.key);
         }
         ++applied;
-        return true;  // Continue
-    });
+    }
 
     spdlog::info("KvStore: replayed {} WAL entries, {} keys in memory", applied, data_.size());
 }
