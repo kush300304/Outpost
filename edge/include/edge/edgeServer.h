@@ -99,6 +99,9 @@ private:
     std::atomic<uint64_t> reconciledWrites_{0};
     std::atomic<uint64_t> rateLimited_{0};
 
+    // Last write version stamped by this edge (microseconds since epoch, strictly increasing).
+    std::atomic<uint64_t> lastVersion_{0};
+
     // Circuit breaker state (simplified for now — full CircuitBreaker class in Phase 3)
     enum class BreakerState { CLOSED, OPEN, HALF_OPEN };
     std::atomic<BreakerState> breakerState_{BreakerState::CLOSED};

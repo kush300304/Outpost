@@ -47,14 +47,15 @@ std::optional<std::string> OriginClient::get(const std::string& key) {
     return std::nullopt;
 }
 
-OriginResponse OriginClient::put(const std::string& key, const std::string& value) {
+OriginResponse OriginClient::put(const std::string& key, const std::string& value,
+                                 uint64_t version, const std::string& writerId) {
     ++totalRequests_;
 
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
 
-    json body = {{"value", value}};
+    json body = {{"value", value}, {"version", version}, {"writerId", writerId}};
     auto res = cli.Put("/key/" + key, body.dump(), "application/json");
 
     OriginResponse response;

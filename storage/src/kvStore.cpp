@@ -1,102 +1,135 @@
+/// @file kvStore.cpp
+/// @brief Versioned key-value store: last-writer-wins puts, WAL logging and replay.
+
 #include "storage/kvStore.h"
 
-#include <shared_mutex>
+#include <mutex>
+#include <tuple>
 #include <utility>
-
-#include <spdlog/spdlog.h>
 
 namespace outpost {
 namespace storage {
 
+namespace {
+
+/// Compares a write's (version, writerId) with the stored one.
+PutOutcome compareWrite(const VersionedValue* stored, uint64_t version,
+                        const std::string& writerId) {
+    PutOutcome outcome = PutOutcome::APPLIED;
+    if (stored != nullptr) {
+        auto incoming = std::tie(version, writerId);
+        auto existing = std::tie(stored->version, stored->writerId);
+        if (incoming == existing) {
+            outcome = PutOutcome::DUPLICATE;
+        } else if (incoming < existing) {
+            outcome = PutOutcome::SUPERSEDED;
+        }
+    }
+    return outcome;
+}
+
+}  // namespace
+
+const char* putOutcomeToString(PutOutcome outcome) {
+    const char* name = "applied";
+    if (outcome == PutOutcome::DUPLICATE) {
+        name = "duplicate";
+    } else if (outcome == PutOutcome::SUPERSEDED) {
+        name = "superseded";
+    }
+    return name;
+}
+
 KvStore::KvStore() = default;
 
-KvStore::KvStore(const std::string& walFilePath)
-    : wal_(std::make_unique<outpost::common::WriteAheadLog>(walFilePath)) {
-    replayWal();
-}
-
-void KvStore::replayWal() {
-    if (!wal_) return;
-
-    std::size_t applied = 0;
-    for (const common::WalEntry& entry : wal_->replay()) {
-        if (entry.operation == common::WalOperation::PUT) {
-            data_[entry.key] = entry.value;
-        } else if (entry.operation == common::WalOperation::DELETE) {
-            data_.erase(entry.key);
+KvStore::KvStore(const std::string& walFilePath, bool syncOnAppend)
+    : wal_(std::make_unique<common::WriteAheadLog>(walFilePath, syncOnAppend)) {
+    for (common::WalEntry& entry : wal_->replay()) {
+        auto it = data_.find(entry.key);
+        const VersionedValue* stored = it == data_.end() ? nullptr : &it->second;
+        if (entry.operation == common::WalOperation::PUT &&
+            compareWrite(stored, entry.version, entry.writerId) == PutOutcome::APPLIED) {
+            data_[entry.key] =
+                VersionedValue{std::move(entry.value), entry.version, std::move(entry.writerId)};
         }
-        ++applied;
     }
-
-    spdlog::info("KvStore: replayed {} WAL entries, {} keys in memory", applied, data_.size());
 }
 
-std::optional<std::string> KvStore::get(const std::string& key) const {
-    std::shared_lock lock(mutex_);
+std::optional<VersionedValue> KvStore::get(const std::string& key) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    std::optional<VersionedValue> result;
     auto it = data_.find(key);
-    if (it == data_.end()) {
-        return std::nullopt;
+    if (it != data_.end()) {
+        result = it->second;
     }
-    return it->second;
+    return result;
 }
 
-void KvStore::put(const std::string& key, const std::string& value) {
-    std::unique_lock lock(mutex_);
-    // WAL first (write-ahead), then in-memory update.
-    if (wal_) {
-        wal_->appendPut(key, value);
-    }
-    data_[key] = value;
-}
-
-bool KvStore::remove(const std::string& key) {
-    std::unique_lock lock(mutex_);
+PutOutcome KvStore::put(const std::string& key, const std::string& value, uint64_t version,
+                        const std::string& writerId) {
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     auto it = data_.find(key);
-    if (it == data_.end()) {
-        return false;
+    PutOutcome outcome =
+        compareWrite(it == data_.end() ? nullptr : &it->second, version, writerId);
+    if (outcome == PutOutcome::APPLIED) {
+        if (wal_) {
+            common::WalEntry entry;
+            entry.operation = common::WalOperation::PUT;
+            entry.key = key;
+            entry.value = value;
+            entry.version = version;
+            entry.writerId = writerId;
+            wal_->append(entry);
+        }
+        data_[key] = VersionedValue{value, version, writerId};
+        ++counters_.applied;
+    } else if (outcome == PutOutcome::DUPLICATE) {
+        ++counters_.duplicates;
+    } else {
+        ++counters_.superseded;
     }
-    // WAL first, then in-memory delete.
-    if (wal_) {
-        wal_->appendDelete(key);
-    }
-    data_.erase(it);
-    return true;
+    return outcome;
 }
 
 bool KvStore::exists(const std::string& key) const {
-    std::shared_lock lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return data_.find(key) != data_.end();
 }
 
 std::size_t KvStore::size() const {
-    std::shared_lock lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return data_.size();
 }
 
 std::vector<std::string> KvStore::getAllKeys() const {
-    std::shared_lock lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     std::vector<std::string> keys;
     keys.reserve(data_.size());
-    for (const auto& [k, v] : data_) {
-        keys.push_back(k);
+    for (const auto& [key, stored] : data_) {
+        keys.push_back(key);
     }
     return keys;
 }
 
-void KvStore::clear() {
-    std::unique_lock lock(mutex_);
-    data_.clear();
-    if (wal_) {
-        wal_->truncate();
+void KvStore::forEach(
+    const std::function<void(const std::string& key, const std::string& value)>& fn) const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (const auto& [key, stored] : data_) {
+        fn(key, stored.value);
     }
 }
 
-void KvStore::forEach(
-    const std::function<void(const std::string& key, const std::string& value)>& fn) const {
-    std::shared_lock lock(mutex_);
-    for (const auto& [k, v] : data_) {
-        fn(k, v);
-    }
+bool KvStore::isDurable() const {
+    return wal_ != nullptr;
+}
+
+KvStore::Counters KvStore::counters() const {
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    return counters_;
+}
+
+common::WalRecoveryReport KvStore::recoveryReport() const {
+    return wal_ ? wal_->recoveryReport() : common::WalRecoveryReport{};
 }
 
 }  // namespace storage

@@ -1,140 +1,173 @@
 /// @file testKvStore.cpp
 /// @brief Unit tests for outpost::storage::KvStore.
 ///
-/// Covers: basic CRUD, overwrite semantics, missing-key behavior,
-/// iteration, clear, concurrent read/write safety.
+/// Covers: last-writer-wins outcomes (applied / duplicate / superseded), the writer-id tie-break,
+/// durability across restart, idempotent replay of a log that contains repeated or older records,
+/// and concurrent access.
 
 #include "storage/kvStore.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-using outpost::storage::KvStore;
+#include "common/wal.h"
 
-// ── Basic CRUD ──────────────────────────────────────────────────────────
+using outpost::common::WalEntry;
+using outpost::common::WalOperation;
+using outpost::common::WriteAheadLog;
+using outpost::storage::KvStore;
+using outpost::storage::PutOutcome;
+
+namespace fs = std::filesystem;
+
+/// @brief Unique WAL path per test, removed afterwards.
+class KvStoreDurableTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        path_ = (fs::temp_directory_path() /
+                 ("outpost_kv_" + std::to_string(::getpid()) + "_" +
+                  ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".wal"))
+                    .string();
+        fs::remove(path_);
+    }
+    void TearDown() override {
+        std::error_code ec;
+        fs::remove(path_, ec);
+    }
+    std::string path_;
+};
+
+// ── Last-writer-wins ────────────────────────────────────────────────────
 
 TEST(KvStoreTest, GetOnEmptyStoreReturnsNullopt) {
     KvStore store;
     EXPECT_FALSE(store.get("nonexistent").has_value());
 }
 
-TEST(KvStoreTest, PutThenGetReturnsValue) {
+TEST(KvStoreTest, FirstPutIsAppliedWithItsVersion) {
     KvStore store;
-    store.put("alpha", "100");
-    auto val = store.get("alpha");
-    ASSERT_TRUE(val.has_value());
-    EXPECT_EQ(val.value(), "100");
+    EXPECT_EQ(store.put("alpha", "100", 10, "edge-1"), PutOutcome::APPLIED);
+    auto stored = store.get("alpha");
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->value, "100");
+    EXPECT_EQ(stored->version, 10u);
+    EXPECT_EQ(stored->writerId, "edge-1");
 }
 
-TEST(KvStoreTest, PutOverwritesPreviousValue) {
+TEST(KvStoreTest, NewerVersionOverwrites) {
     KvStore store;
-    store.put("key", "original");
-    store.put("key", "updated");
-    auto val = store.get("key");
-    ASSERT_TRUE(val.has_value());
-    EXPECT_EQ(val.value(), "updated");
+    store.put("key", "original", 10, "edge-1");
+    EXPECT_EQ(store.put("key", "updated", 11, "edge-2"), PutOutcome::APPLIED);
+    EXPECT_EQ(store.get("key")->value, "updated");
 }
 
-TEST(KvStoreTest, ExistsReturnsTrueForExistingKey) {
+TEST(KvStoreTest, SameVersionAndWriterIsDuplicate) {
     KvStore store;
-    store.put("present", "value");
-    EXPECT_TRUE(store.exists("present"));
-    EXPECT_FALSE(store.exists("absent"));
+    store.put("key", "v", 10, "edge-1");
+    EXPECT_EQ(store.put("key", "v", 10, "edge-1"), PutOutcome::DUPLICATE);
+    EXPECT_EQ(store.get("key")->value, "v");
+    EXPECT_EQ(store.counters().applied, 1u);
+    EXPECT_EQ(store.counters().duplicates, 1u);
 }
 
-TEST(KvStoreTest, RemoveExistingKeyReturnsTrue) {
+TEST(KvStoreTest, OlderVersionNeverOverwritesNewerData) {
     KvStore store;
-    store.put("toRemove", "val");
-    EXPECT_TRUE(store.remove("toRemove"));
-    EXPECT_FALSE(store.exists("toRemove"));
-    EXPECT_FALSE(store.get("toRemove").has_value());
+    store.put("key", "newer", 20, "edge-1");
+    EXPECT_EQ(store.put("key", "older", 10, "edge-2"), PutOutcome::SUPERSEDED);
+    EXPECT_EQ(store.get("key")->value, "newer");
+    EXPECT_EQ(store.counters().superseded, 1u);
 }
 
-TEST(KvStoreTest, RemoveNonexistentKeyReturnsFalse) {
+TEST(KvStoreTest, EqualVersionTieBreaksOnWriterId) {
     KvStore store;
-    EXPECT_FALSE(store.remove("ghost"));
-}
-
-TEST(KvStoreTest, SizeReflectsInsertionsAndRemovals) {
-    KvStore store;
-    EXPECT_EQ(store.size(), 0u);
-
-    store.put("a", "1");
-    store.put("b", "2");
-    store.put("c", "3");
-    EXPECT_EQ(store.size(), 3u);
-
-    store.remove("b");
-    EXPECT_EQ(store.size(), 2u);
+    store.put("key", "from-a", 10, "edge-a");
+    EXPECT_EQ(store.put("key", "from-b", 10, "edge-b"), PutOutcome::APPLIED);
+    EXPECT_EQ(store.put("key", "from-a-again", 10, "edge-a"), PutOutcome::SUPERSEDED);
+    EXPECT_EQ(store.get("key")->value, "from-b");
 }
 
 TEST(KvStoreTest, GetAllKeysReturnsAllInsertedKeys) {
     KvStore store;
-    store.put("x", "1");
-    store.put("y", "2");
-    store.put("z", "3");
-
+    store.put("x", "1", 1, "w");
+    store.put("y", "2", 1, "w");
+    store.put("z", "3", 1, "w");
     auto keys = store.getAllKeys();
-    ASSERT_EQ(keys.size(), 3u);
-
     std::sort(keys.begin(), keys.end());
-    EXPECT_EQ(keys[0], "x");
-    EXPECT_EQ(keys[1], "y");
-    EXPECT_EQ(keys[2], "z");
-}
-
-TEST(KvStoreTest, ClearRemovesAllEntries) {
-    KvStore store;
-    store.put("a", "1");
-    store.put("b", "2");
-    EXPECT_EQ(store.size(), 2u);
-
-    store.clear();
-    EXPECT_EQ(store.size(), 0u);
-    EXPECT_FALSE(store.get("a").has_value());
-    EXPECT_FALSE(store.get("b").has_value());
+    EXPECT_EQ(keys, (std::vector<std::string>{"x", "y", "z"}));
+    EXPECT_EQ(store.size(), 3u);
 }
 
 TEST(KvStoreTest, ForEachVisitsAllEntries) {
     KvStore store;
-    store.put("k1", "v1");
-    store.put("k2", "v2");
-
+    store.put("k1", "v1", 1, "w");
+    store.put("k2", "v2", 1, "w");
     std::vector<std::pair<std::string, std::string>> visited;
-    store.forEach([&visited](const std::string& k, const std::string& v) {
-        visited.emplace_back(k, v);
+    store.forEach([&visited](const std::string& key, const std::string& value) {
+        visited.emplace_back(key, value);
     });
-
-    ASSERT_EQ(visited.size(), 2u);
     std::sort(visited.begin(), visited.end());
+    ASSERT_EQ(visited.size(), 2u);
     EXPECT_EQ(visited[0], std::make_pair(std::string("k1"), std::string("v1")));
     EXPECT_EQ(visited[1], std::make_pair(std::string("k2"), std::string("v2")));
 }
 
-// ── Edge cases ──────────────────────────────────────────────────────────
-
-TEST(KvStoreTest, EmptyKeyAndValue) {
+TEST(KvStoreTest, EmptyKeyAndLargeValue) {
     KvStore store;
-    store.put("", "");
+    std::string large(1 << 20, 'X');
+    store.put("", "", 1, "w");
+    store.put("big", large, 1, "w");
     EXPECT_TRUE(store.exists(""));
-    auto val = store.get("");
-    ASSERT_TRUE(val.has_value());
-    EXPECT_EQ(val.value(), "");
+    EXPECT_EQ(store.get("big")->value, large);
 }
 
-TEST(KvStoreTest, LargeValue) {
-    KvStore store;
-    std::string largeVal(1 << 20, 'X');  // 1 MB
-    store.put("big", largeVal);
-    auto val = store.get("big");
-    ASSERT_TRUE(val.has_value());
-    EXPECT_EQ(val.value().size(), largeVal.size());
-    EXPECT_EQ(val.value(), largeVal);
+// ── Durability and replay ───────────────────────────────────────────────
+
+TEST_F(KvStoreDurableTest, StateSurvivesRestart) {
+    {
+        KvStore store(path_, false);
+        store.put("a", "1", 1, "edge-1");
+        store.put("a", "2", 2, "edge-1");
+        store.put("b", "x", 5, "edge-2");
+    }
+    KvStore reopened(path_, false);
+    EXPECT_EQ(reopened.size(), 2u);
+    EXPECT_EQ(reopened.get("a")->value, "2");
+    EXPECT_EQ(reopened.get("a")->version, 2u);
+    EXPECT_EQ(reopened.get("b")->writerId, "edge-2");
+    EXPECT_EQ(reopened.put("a", "2", 2, "edge-1"), PutOutcome::DUPLICATE);
+}
+
+TEST_F(KvStoreDurableTest, OnlyAppliedWritesAreLogged) {
+    {
+        KvStore store(path_, false);
+        store.put("k", "new", 20, "edge-1");
+        store.put("k", "new", 20, "edge-1");  // duplicate
+        store.put("k", "old", 10, "edge-1");  // superseded
+    }
+    WriteAheadLog wal(path_, false);
+    EXPECT_EQ(wal.size(), 1u);
+}
+
+TEST_F(KvStoreDurableTest, ReplayIsIdempotentWhenLogRepeatsOrReordersRecords) {
+    {
+        WriteAheadLog wal(path_, false);
+        WalEntry newer{WalOperation::PUT, "k", "newer", 20, "edge-1"};
+        WalEntry older{WalOperation::PUT, "k", "older", 10, "edge-2"};
+        wal.append(newer);
+        wal.append(newer);
+        wal.append(older);
+    }
+    KvStore first(path_, false);
+    EXPECT_EQ(first.get("k")->value, "newer");
+    EXPECT_EQ(first.size(), 1u);
 }
 
 // ── Concurrency ─────────────────────────────────────────────────────────
@@ -143,70 +176,40 @@ TEST(KvStoreTest, ConcurrentWritesDoNotCorrupt) {
     KvStore store;
     constexpr int kNumThreads = 8;
     constexpr int kWritesPerThread = 1000;
-
     std::vector<std::thread> threads;
-    threads.reserve(kNumThreads);
-
     for (int t = 0; t < kNumThreads; ++t) {
         threads.emplace_back([&store, t]() {
             for (int i = 0; i < kWritesPerThread; ++i) {
-                std::string key = "t" + std::to_string(t) + "_k" + std::to_string(i);
-                store.put(key, std::to_string(i));
+                store.put("t" + std::to_string(t) + "_k" + std::to_string(i), std::to_string(i),
+                          static_cast<uint64_t>(i + 1), "w" + std::to_string(t));
             }
         });
     }
-
-    for (auto& th : threads) {
-        th.join();
+    for (auto& thread : threads) {
+        thread.join();
     }
-
     EXPECT_EQ(store.size(), static_cast<std::size_t>(kNumThreads * kWritesPerThread));
+    EXPECT_EQ(store.counters().applied, static_cast<uint64_t>(kNumThreads * kWritesPerThread));
 }
 
-TEST(KvStoreTest, ConcurrentReadsAndWrites) {
+TEST(KvStoreTest, ConcurrentWritersConvergeOnHighestVersion) {
     KvStore store;
-    std::atomic<bool> stop{false};
-    constexpr int kReaderThreads = 4;
-
-    // Pre-populate
-    for (int i = 0; i < 100; ++i) {
-        store.put("key" + std::to_string(i), "val" + std::to_string(i));
-    }
-
-    // Readers run continuously, checking values are consistent
-    std::vector<std::thread> readers;
-    std::atomic<int> readCount{0};
-    for (int r = 0; r < kReaderThreads; ++r) {
-        readers.emplace_back([&store, &stop, &readCount]() {
-            while (!stop.load(std::memory_order_relaxed)) {
-                for (int i = 0; i < 100; ++i) {
-                    auto val = store.get("key" + std::to_string(i));
-                    // Value may or may not exist (writer may have removed it),
-                    // but we must not crash or get garbled data.
-                    readCount.fetch_add(1, std::memory_order_relaxed);
-                }
+    constexpr int kWriters = 4;
+    constexpr int kVersions = 500;
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kWriters; ++t) {
+        threads.emplace_back([&store, t]() {
+            for (int v = 1; v <= kVersions; ++v) {
+                store.put("shared", "v" + std::to_string(v) + "-w" + std::to_string(t),
+                          static_cast<uint64_t>(v), "w" + std::to_string(t));
             }
         });
     }
-
-    // Writer overwrites values
-    std::thread writer([&store, &stop]() {
-        for (int round = 0; round < 50 && !stop.load(); ++round) {
-            for (int i = 0; i < 100; ++i) {
-                store.put("key" + std::to_string(i),
-                          "updated_" + std::to_string(round) + "_" + std::to_string(i));
-            }
-        }
-        stop.store(true, std::memory_order_relaxed);
-    });
-
-    writer.join();
-    stop.store(true, std::memory_order_relaxed);
-    for (auto& th : readers) {
-        th.join();
+    for (auto& thread : threads) {
+        thread.join();
     }
-
-    // Sanity check: readers actually ran
-    EXPECT_GT(readCount.load(), 0);
-    EXPECT_EQ(store.size(), 100u);
+    auto stored = store.get("shared");
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->version, static_cast<uint64_t>(kVersions));
+    EXPECT_EQ(stored->writerId, "w" + std::to_string(kWriters - 1));
 }

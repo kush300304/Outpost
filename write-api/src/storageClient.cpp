@@ -39,12 +39,13 @@ std::optional<std::string> StorageClient::get(const std::string& key) {
     return std::nullopt;
 }
 
-StorageResponse StorageClient::put(const std::string& key, const std::string& value) {
+StorageResponse StorageClient::put(const std::string& key, const std::string& value,
+                                   uint64_t version, const std::string& writerId) {
     httplib::Client cli(host_, port_);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
 
-    json body = {{"value", value}};
+    json body = {{"value", value}, {"version", version}, {"writerId", writerId}};
     auto res = cli.Put("/key/" + key, body.dump(), "application/json");
 
     StorageResponse response;
@@ -64,27 +65,6 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
         spdlog::warn("StorageClient PUT /key/{}: {}", key, response.errorMessage);
     }
 
-    return response;
-}
-
-StorageResponse StorageClient::remove(const std::string& key) {
-    httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(2);
-    cli.set_read_timeout(5);
-
-    auto res = cli.Delete("/key/" + key);
-
-    StorageResponse response;
-    if (!res) {
-        response.errorMessage =
-            "Connection failed: " + std::string(httplib::to_string(res.error()));
-        spdlog::error("StorageClient DELETE /key/{}: {}", key, response.errorMessage);
-        return response;
-    }
-
-    response.httpStatus = res->status;
-    response.body = res->body;
-    response.success = (res->status == 200);
     return response;
 }
 

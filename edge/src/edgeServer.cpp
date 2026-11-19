@@ -3,6 +3,7 @@
 
 #include "edge/edgeServer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <string>
 
@@ -162,11 +163,26 @@ void EdgeServer::registerRoutes() {
             return;
         }
 
+        // Stamp the write: microseconds since epoch, strictly increasing on this edge.
+        uint64_t now = static_cast<uint64_t>(
+            duration_cast<microseconds>(system_clock::now().time_since_epoch()).count());
+        uint64_t previous = lastVersion_.load();
+        uint64_t version = std::max(now, previous + 1);
+        while (!lastVersion_.compare_exchange_weak(previous, version)) {
+            version = std::max(now, previous + 1);
+        }
+        common::WalEntry queued;
+        queued.operation = common::WalOperation::PUT;
+        queued.key = key;
+        queued.value = value;
+        queued.version = version;
+        queued.writerId = config_.nodeId;
+
         auto state = breakerState_.load();
         if (state == BreakerState::OPEN) {
             // Breaker open — queue write locally instead of forwarding
             if (writeQueue_) {
-                writeQueue_->appendPut(key, value);
+                writeQueue_->append(queued);
                 queuedWrites_.fetch_add(1, std::memory_order_relaxed);
             }
             // Update local cache optimistically
@@ -184,14 +200,14 @@ void EdgeServer::registerRoutes() {
         }
 
         // Breaker closed/half-open — forward to origin
-        auto originRes = originClient_.put(key, value);
+        auto originRes = originClient_.put(key, value, version, config_.nodeId);
         if (!originRes.success) {
             // Origin write failed — record failure for breaker
             consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
 
             // Queue the write locally so it's not lost
             if (writeQueue_) {
-                writeQueue_->appendPut(key, value);
+                writeQueue_->append(queued);
                 queuedWrites_.fetch_add(1, std::memory_order_relaxed);
             }
             cache_.put(key, value);
@@ -320,7 +336,7 @@ void EdgeServer::reconcileQueuedWrites() {
 
     for (const auto& entry : entries) {
         if (entry.operation == common::WalOperation::PUT) {
-            auto result = originClient_.put(entry.key, entry.value);
+            auto result = originClient_.put(entry.key, entry.value, entry.version, entry.writerId);
             if (result.success) {
                 ++succeeded;
             } else {

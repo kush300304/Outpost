@@ -34,11 +34,14 @@ public:
     /// @return The value if found, or std::nullopt on 404/error.
     std::optional<std::string> get(const std::string& key);
 
-    /// @brief Store a key-value pair at the origin via write-api.
-    /// @param key   The key.
-    /// @param value The value.
+    /// @brief Store a versioned key-value pair at the origin via write-api.
+    /// @param key      The key.
+    /// @param value    The value.
+    /// @param version  Write version stamped by the accepting edge.
+    /// @param writerId Node id of the accepting edge.
     /// @return OriginResponse with the result.
-    OriginResponse put(const std::string& key, const std::string& value);
+    OriginResponse put(const std::string& key, const std::string& value, uint64_t version,
+                       const std::string& writerId);
 
     /// @brief Check if the write-api is reachable and healthy.
     /// @return true if /health returns 200.
