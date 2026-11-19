@@ -1,18 +1,18 @@
 #pragma once
 
 /// @file kvStore.h
-/// @brief Thread-safe in-memory key-value store with optional WAL durability.
+/// @brief Thread-safe versioned key-value store with optional WAL durability.
 ///
-/// When constructed with a WAL file path, every mutation is written to the WAL
-/// before updating the in-memory map. On construction, the WAL is replayed to
-/// rebuild state from disk, providing crash-recovery semantics.
-///
-/// Without a WAL path, operates as a pure in-memory store (useful for testing).
+/// Every value carries the (version, writerId) pair of the write that produced it. A put is
+/// applied only when its pair is newer than the stored pair (last-writer-wins): the same write
+/// arriving twice is a DUPLICATE and an older write is SUPERSEDED, so replaying queued writes is
+/// idempotent and never overwrites newer data. Only applied writes are appended to the WAL, and
+/// the WAL is replayed with the same rule on construction.
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -24,74 +24,82 @@
 namespace outpost {
 namespace storage {
 
-/// @brief Thread-safe in-memory key-value store with optional WAL persistence.
+/// @brief Result of a versioned put.
+enum class PutOutcome {
+    APPLIED,     ///< The write was newer and is now the stored value.
+    DUPLICATE,   ///< The same (version, writerId) is already stored; nothing changed.
+    SUPERSEDED,  ///< A newer write is already stored; nothing changed.
+};
+
+/// @brief Human-readable name of a PutOutcome ("applied", "duplicate", "superseded").
+const char* putOutcomeToString(PutOutcome outcome);
+
+/// @brief A stored value with the identity of the write that produced it.
+struct VersionedValue {
+    std::string value;
+    uint64_t version = 0;
+    std::string writerId;
+};
+
+/// @brief Thread-safe versioned key-value store.
 ///
-/// Concurrency model:
-///   - Reads (get, exists, size, getAllKeys) acquire a shared lock.
-///   - Writes (put, remove, clear) acquire an exclusive lock.
-///
-/// All public methods are safe to call from multiple threads concurrently.
+/// Reads take a shared lock; puts take an exclusive lock that also covers the WAL append, so the
+/// log order always matches the order in which writes were applied.
 class KvStore {
 public:
-    /// @brief Construct a pure in-memory store (no durability).
+    /// @brief Counters of put outcomes since construction.
+    struct Counters {
+        uint64_t applied = 0;
+        uint64_t duplicates = 0;
+        uint64_t superseded = 0;
+    };
+
+    /// @brief Construct a pure in-memory store.
     KvStore();
 
-    /// @brief Construct a durable store backed by a WAL file.
-    /// @param walFilePath Path to the WAL file. Created if it doesn't exist.
-    ///                    On construction, the WAL is replayed to rebuild state.
-    explicit KvStore(const std::string& walFilePath);
+    /// @brief Construct a durable store; replays the WAL at walFilePath to rebuild state.
+    /// @param syncOnAppend fsync each applied write before put() returns.
+    explicit KvStore(const std::string& walFilePath, bool syncOnAppend = true);
 
-    ~KvStore() = default;
-
-    // Non-copyable, non-movable (owns a mutex and possibly a WAL).
     KvStore(const KvStore&) = delete;
     KvStore& operator=(const KvStore&) = delete;
     KvStore(KvStore&&) = delete;
     KvStore& operator=(KvStore&&) = delete;
 
-    /// @brief Retrieve the value associated with a key.
-    /// @param key The key to look up.
-    /// @return The value if the key exists, or std::nullopt if it does not.
-    std::optional<std::string> get(const std::string& key) const;
+    /// @brief Return the stored value for key, if any.
+    std::optional<VersionedValue> get(const std::string& key) const;
 
-    /// @brief Insert or update a key-value pair.
-    /// @param key   The key to set.
-    /// @param value The value to associate with the key.
-    ///
-    /// If a WAL is configured, the write is logged before the in-memory update.
-    void put(const std::string& key, const std::string& value);
+    /// @brief Store value under key when (version, writerId) is newer than the stored pair.
+    PutOutcome put(const std::string& key, const std::string& value, uint64_t version,
+                   const std::string& writerId);
 
-    /// @brief Remove a key-value pair.
-    /// @param key The key to remove.
-    /// @return true if the key was found and removed, false if the key did not exist.
-    bool remove(const std::string& key);
-
-    /// @brief Check whether a key exists in the store.
+    /// @brief Whether key has a stored value.
     bool exists(const std::string& key) const;
 
-    /// @brief Return the number of key-value pairs currently stored.
+    /// @brief Number of stored keys.
     std::size_t size() const;
 
-    /// @brief Return a snapshot of all keys currently in the store.
+    /// @brief Snapshot of all stored keys.
     std::vector<std::string> getAllKeys() const;
 
-    /// @brief Remove all entries from the store. Also truncates the WAL if present.
-    void clear();
+    /// @brief Call fn for every key and value while holding a shared lock.
+    void forEach(const std::function<void(const std::string& key, const std::string& value)>& fn)
+        const;
 
-    /// @brief Execute a callback for each key-value pair while holding a read lock.
-    void forEach(const std::function<void(const std::string& key,
-                                          const std::string& value)>& fn) const;
+    /// @brief Whether this store is backed by a WAL.
+    bool isDurable() const;
 
-    /// @brief Return whether this store is backed by a WAL.
-    bool isDurable() const { return wal_ != nullptr; }
+    /// @brief Put outcome counters.
+    Counters counters() const;
+
+    /// @brief What WAL recovery found at construction (all zero for an in-memory store).
+    common::WalRecoveryReport recoveryReport() const;
 
 private:
-    /// @brief Replay the WAL to rebuild in-memory state. Called during construction.
-    void replayWal();
-
     mutable std::shared_mutex mutex_;
-    std::unordered_map<std::string, std::string> data_;
-    std::unique_ptr<outpost::common::WriteAheadLog> wal_;
+    std::unordered_map<std::string, VersionedValue> data_;
+    std::unique_ptr<common::WriteAheadLog> wal_;
+    Counters counters_;
 };
 
 }  // namespace storage

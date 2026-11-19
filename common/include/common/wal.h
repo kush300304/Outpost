@@ -1,27 +1,35 @@
 #pragma once
 
 /// @file wal.h
-/// @brief Write-Ahead Log (WAL) for crash-recoverable persistence.
+/// @brief Write-ahead log: an append-only file of checksummed records with crash recovery.
 ///
-/// Provides an append-only log that writes entries to disk before they are
-/// applied to the in-memory data structure. On startup, the log can be replayed
-/// to reconstruct state.
+/// Record layout (all integers little-endian):
+///   [4 bytes] magic          0x4C41574F
+///   [4 bytes] crc32          CRC-32 over the 4 payloadLength bytes followed by the payload
+///   [4 bytes] payloadLength  number of payload bytes that follow
+///   [payloadLength bytes] payload:
+///       [8 bytes] sequenceNumber
+///       [1 byte ] operation        0x01 = PUT, 0x02 = DELETE
+///       [8 bytes] version          caller-defined ordering version
+///       [4 bytes] writerIdLength,  then writerId bytes
+///       [4 bytes] keyLength,       then key bytes
+///       [4 bytes] valueLength,     then value bytes
 ///
-/// Binary format per entry:
-///   [4 bytes] payload_length (uint32_t, little-endian)
-///   [4 bytes] crc32          (uint32_t, little-endian, over the payload)
-///   [1 byte]  operation      (0x01 = PUT, 0x02 = DELETE)
-///   [4 bytes] key_length     (uint32_t, little-endian)
-///   [N bytes] key_data
-///   [4 bytes] value_length   (uint32_t, little-endian)  — only for PUT
-///   [M bytes] value_data                                — only for PUT
+/// Recovery on construction: every record whose magic, length and checksum are valid is kept.
+/// A damaged record between valid records is skipped by searching forward for the next valid
+/// record. Bytes after the last valid record (a torn final write) are cut off, so new appends
+/// always start on a record boundary and stay replayable.
 ///
-/// Each entry is self-contained. Corrupted entries (CRC mismatch or truncation)
-/// are detected and skipped during replay, with a warning logged.
+/// Durability: each append is written with a single unbuffered write and, when syncOnAppend is
+/// true, fsync'd before append() returns. A failed append rolls the file back to its previous size.
+///
+/// Thread safety: all public methods are serialized by one mutex. replay() returns a snapshot,
+/// so callers iterate without holding the log's lock.
 
+#include <cstddef>
 #include <cstdint>
-#include <fstream>
-#include <functional>
+#include <cstdio>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,86 +43,105 @@ enum class WalOperation : uint8_t {
     DELETE = 0x02,
 };
 
-/// @brief A single WAL entry representing a mutation.
+/// @brief A single logged mutation.
 struct WalEntry {
-    WalOperation operation;
+    WalOperation operation = WalOperation::PUT;
     std::string key;
-    std::string value;  ///< Empty for DELETE operations.
-    uint64_t sequenceNumber = 0;  ///< Monotonically increasing, assigned on append.
+    std::string value;            ///< Empty for DELETE.
+    uint64_t version = 0;         ///< Caller-defined ordering version, stored verbatim.
+    std::string writerId;         ///< Caller-defined writer identity, stored verbatim.
+    uint64_t sequenceNumber = 0;  ///< Assigned by append(); ignored on input.
 };
 
-/// @brief Append-only write-ahead log with binary format and CRC32 integrity checks.
-///
-/// Thread safety: all public methods are protected by a mutex.
-/// Concurrent appends from multiple threads are serialized.
+/// @brief What recovery found when the log was opened.
+struct WalRecoveryReport {
+    std::size_t validRecords = 0;    ///< Records kept.
+    std::size_t skippedBytes = 0;    ///< Damaged bytes between valid records (ignored on replay).
+    std::size_t truncatedBytes = 0;  ///< Invalid tail bytes removed from the end of the file.
+};
+
+/// @brief Append-only write-ahead log with per-record checksums and tail recovery.
 class WriteAheadLog {
 public:
-    /// @brief Construct a WAL that writes to the specified file path.
-    /// @param filePath Path to the WAL file. Created if it does not exist.
-    explicit WriteAheadLog(const std::string& filePath);
+    /// @param filePath     Log file; created when missing, recovered when present.
+    /// @param syncOnAppend fsync after every append (durable across power loss) when true.
+    explicit WriteAheadLog(const std::string& filePath, bool syncOnAppend = true);
 
-    ~WriteAheadLog();
-
-    // Non-copyable, non-movable.
     WriteAheadLog(const WriteAheadLog&) = delete;
     WriteAheadLog& operator=(const WriteAheadLog&) = delete;
     WriteAheadLog(WriteAheadLog&&) = delete;
     WriteAheadLog& operator=(WriteAheadLog&&) = delete;
 
-    /// @brief Append a PUT entry to the log and flush to disk.
-    /// @param key   The key being written.
-    /// @param value The value being written.
-    /// @return The sequence number assigned to this entry.
+    /// @brief Append an entry and make it durable.
+    /// @return The sequence number assigned to the entry.
+    /// @throws std::runtime_error when the write fails; the file is rolled back.
+    uint64_t append(const WalEntry& entry);
+
+    /// @brief Convenience append of a PUT with version 0 and an empty writer id.
     uint64_t appendPut(const std::string& key, const std::string& value);
 
-    /// @brief Append a DELETE entry to the log and flush to disk.
-    /// @param key The key being deleted.
-    /// @return The sequence number assigned to this entry.
+    /// @brief Convenience append of a DELETE with version 0 and an empty writer id.
     uint64_t appendDelete(const std::string& key);
 
-    /// @brief Replay all valid entries from the log file.
-    ///
-    /// Reads the file from the beginning. Entries that fail CRC validation
-    /// or are truncated are skipped with a warning.
-    ///
-    /// @return A vector of valid entries in the order they were written.
+    /// @brief Return every valid entry currently in the log, in append order.
     std::vector<WalEntry> replay() const;
 
-    /// @brief Replay entries by invoking a callback for each valid entry.
+    /// @brief Atomically remove every entry with sequenceNumber <= the given value.
     ///
-    /// More memory-efficient than replay() for large logs.
-    /// @param callback Called for each valid entry. Return false to stop early.
-    void replayForEach(const std::function<bool(const WalEntry& entry)>& callback) const;
+    /// Entries appended after a replay() snapshot keep their place, so a consumer can drain a
+    /// snapshot and then discard exactly what it processed.
+    /// @return Number of entries left in the log.
+    std::size_t discardThrough(uint64_t sequenceNumber);
 
-    /// @brief Truncate the WAL file, removing all entries.
-    ///
-    /// Used after a successful compaction or checkpoint.
+    /// @brief Remove every entry. Sequence numbers keep increasing afterwards.
     void truncate();
 
-    /// @brief Return the path to the WAL file.
-    const std::string& filePath() const { return filePath_; }
+    /// @brief Number of valid entries currently in the log.
+    std::size_t size() const;
 
-    /// @brief Return the number of entries appended since this instance was created.
+    /// @brief Path of the log file.
+    const std::string& filePath() const;
+
+    /// @brief Number of entries appended through this instance.
     uint64_t entriesAppended() const;
 
-    /// @brief Return the current sequence number (the next entry will get this + 1).
+    /// @brief Highest sequence number assigned or recovered so far.
     uint64_t currentSequence() const;
 
-    /// @brief Compute CRC32 of a byte buffer (publicly exposed for testing).
+    /// @brief What recovery found when this instance opened the file.
+    WalRecoveryReport recoveryReport() const;
+
+    /// @brief CRC-32 (ISO 3309 polynomial, as used by zlib) of a byte buffer.
     static uint32_t computeCrc32(const uint8_t* data, std::size_t length);
 
 private:
-    /// @brief Serialize and write a single entry to the open file stream.
-    uint64_t appendEntry(const WalEntry& entry);
+    /// @brief Closes a FILE handle owned by a std::unique_ptr.
+    struct FileCloser {
+        void operator()(std::FILE* file) const;
+    };
+    using FileHandle = std::unique_ptr<std::FILE, FileCloser>;
 
-    /// @brief Ensure the output file stream is open and ready for writing.
-    void ensureOpen();
+    /// @brief Result of parsing a log image.
+    struct ScanResult {
+        std::vector<WalEntry> entries;
+        std::size_t validEnd = 0;      ///< Offset just after the last valid record.
+        std::size_t skippedBytes = 0;  ///< Damaged bytes between valid records.
+    };
 
-    std::string filePath_;
+    static std::vector<uint8_t> readFile(const std::string& path);
+    static ScanResult scanRecords(const std::vector<uint8_t>& bytes);
+    static std::vector<uint8_t> encodeRecord(const WalEntry& entry);
+    static FileHandle openForAppend(const std::string& path);
+
+    const std::string filePath_;
+    const bool syncOnAppend_;
     mutable std::mutex mutex_;
-    std::ofstream outFile_;
+    FileHandle file_;
+    std::size_t fileSize_ = 0;
+    std::size_t recordCount_ = 0;
     uint64_t sequenceCounter_ = 0;
     uint64_t entriesAppended_ = 0;
+    WalRecoveryReport recovery_;
 };
 
 }  // namespace common

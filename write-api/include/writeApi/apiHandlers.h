@@ -3,7 +3,7 @@
 /// @file apiHandlers.h
 /// @brief HTTP route handlers for the write-api service.
 ///
-/// Registers GET/PUT/DELETE /key/:id routes that validate requests and
+/// Registers GET/PUT /key/:id routes that validate requests and
 /// proxy them to the storage service via StorageClient. Also provides
 /// /health and /debug/stats diagnostic endpoints.
 
@@ -19,8 +19,7 @@ namespace writeApi {
 /// Routes:
 ///   GET    /health       → 200 health check
 ///   GET    /key/:id      → proxy GET to storage
-///   PUT    /key/:id      → validate, then proxy PUT to storage
-///   DELETE /key/:id      → proxy DELETE to storage
+///   PUT    /key/:id      → validate {"value","version","writerId"}, then proxy to storage
 ///   GET    /debug/stats  → service diagnostics
 ///
 /// @param server  The httplib server to register routes on.

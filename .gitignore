@@ -13,3 +13,6 @@ coverage/
 /outpost-daily-plan.md
 /outpost-project-spec.md
 /outpost-dashboard-spec.md
+
+# Editor and language-server caches
+.cache/

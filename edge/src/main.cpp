@@ -1,14 +1,13 @@
 /// @file main.cpp
-/// @brief Outpost Edge Service — caching proxy with circuit breaker.
+/// @brief Outpost edge service: caching proxy with degraded mode.
 ///
-/// Each edge node runs one instance of this binary. Configuration is via
-/// environment variables:
-///   PORT              — HTTP listen port (default: 8080)
-///   NODE_ID           — unique node identifier (default: "edge-1")
-///   WRITE_API_HOST    — write-api hostname (default: "write-api")
-///   WRITE_API_PORT    — write-api port (default: 8090)
-///   CACHE_CAPACITY    — LRU cache max entries (default: 1024)
-///   WAL_PATH          — path for degraded-mode write queue (default: /data/<nodeId>_write_queue.wal)
+/// Configuration via environment variables:
+///   PORT            HTTP listen port (default 8081)
+///   NODE_ID         unique node identifier (default "edge-1")
+///   WRITE_API_HOST  write-api hostname (default "write-api")
+///   WRITE_API_PORT  write-api port (default 9090)
+///   CACHE_CAPACITY  LRU cache max entries (default 1024)
+///   WAL_PATH        degraded-mode write queue (default /data/<nodeId>_write_queue.wal)
 
 #include <cstdlib>
 #include <string>
@@ -21,33 +20,20 @@ int main() {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [edge] %v");
     spdlog::set_level(spdlog::level::info);
 
+    auto env = [](const char* name, const std::string& fallback) {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::string(value) : fallback;
+    };
+
     outpost::edge::EdgeConfig config;
-
-    const char* envPort = std::getenv("PORT");
-    config.port = envPort ? std::atoi(envPort) : 8080;
-
-    const char* envNodeId = std::getenv("NODE_ID");
-    config.nodeId = envNodeId ? envNodeId : "edge-1";
-
-    const char* envWriteApiHost = std::getenv("WRITE_API_HOST");
-    config.writeApiHost = envWriteApiHost ? envWriteApiHost : "write-api";
-
-    const char* envWriteApiPort = std::getenv("WRITE_API_PORT");
-    config.writeApiPort = envWriteApiPort ? std::atoi(envWriteApiPort) : 8090;
-
-    const char* envCacheCapacity = std::getenv("CACHE_CAPACITY");
-    config.cacheCapacity = envCacheCapacity ? std::stoul(envCacheCapacity) : 1024;
-
-    const char* envWalPath = std::getenv("WAL_PATH");
-    if (envWalPath) {
-        config.walPath = envWalPath;
-    }
-
-    spdlog::info("Starting Outpost Edge [{}] on port {} (write-api -> {}:{})", config.nodeId,
-                 config.port, config.writeApiHost, config.writeApiPort);
+    config.port = std::stoi(env("PORT", "8081"));
+    config.nodeId = env("NODE_ID", "edge-1");
+    config.writeApiHost = env("WRITE_API_HOST", "write-api");
+    config.writeApiPort = std::stoi(env("WRITE_API_PORT", "9090"));
+    config.cacheCapacity = std::stoul(env("CACHE_CAPACITY", "1024"));
+    config.walPath = env("WAL_PATH", "");
 
     outpost::edge::EdgeServer server(config);
-    server.run();
-
-    return 0;
+    bool served = server.bind() > 0 && server.serve();
+    return served ? 0 : 1;
 }
