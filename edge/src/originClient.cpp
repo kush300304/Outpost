@@ -9,7 +9,8 @@ using json = nlohmann::json;
 namespace outpost {
 namespace edge {
 
-OriginClient::OriginClient(const std::string& host, int port) : host_(host), port_(port) {
+OriginClient::OriginClient(const std::string& host, int port, std::chrono::milliseconds timeout)
+    : host_(host), port_(port), timeout_(timeout) {
     spdlog::info("OriginClient configured: {}:{}", host_, port_);
 }
 
@@ -17,8 +18,8 @@ std::optional<std::string> OriginClient::get(const std::string& key) {
     ++totalRequests_;
 
     httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(2);
-    cli.set_read_timeout(5);
+    cli.set_connection_timeout(timeout_);
+    cli.set_read_timeout(timeout_);
 
     auto res = cli.Get("/key/" + key);
     if (!res) {
@@ -52,8 +53,8 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
     ++totalRequests_;
 
     httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(2);
-    cli.set_read_timeout(5);
+    cli.set_connection_timeout(timeout_);
+    cli.set_read_timeout(timeout_);
 
     json body = {{"value", value}, {"version", version}, {"writerId", writerId}};
     auto res = cli.Put("/key/" + key, body.dump(), "application/json");
@@ -81,8 +82,8 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
 
 bool OriginClient::healthCheck() {
     httplib::Client cli(host_, port_);
-    cli.set_connection_timeout(1);
-    cli.set_read_timeout(1);
+    cli.set_connection_timeout(timeout_);
+    cli.set_read_timeout(timeout_);
 
     auto res = cli.Get("/health");
     return res && res->status == 200;

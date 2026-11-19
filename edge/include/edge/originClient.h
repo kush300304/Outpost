@@ -7,6 +7,7 @@
 /// breaker wraps calls through this client — when the breaker opens, the
 /// edge serves stale cache instead of calling through here.
 
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -25,9 +26,10 @@ struct OriginResponse {
 /// @brief HTTP client for upstream communication from edge to write-api.
 class OriginClient {
 public:
-    /// @param host Write-API hostname (e.g., "write-api" in Docker network).
-    /// @param port Write-API port (e.g., 8090).
-    OriginClient(const std::string& host, int port);
+    /// @param host    Write-API hostname (e.g., "write-api" in the compose network).
+    /// @param port    Write-API port.
+    /// @param timeout Connect and read timeout for every call.
+    OriginClient(const std::string& host, int port, std::chrono::milliseconds timeout);
 
     /// @brief Fetch a value from the origin via write-api.
     /// @param key The key to look up.
@@ -56,6 +58,7 @@ public:
 private:
     std::string host_;
     int port_;
+    std::chrono::milliseconds timeout_;
     uint64_t totalRequests_ = 0;
     uint64_t failedRequests_ = 0;
 };
