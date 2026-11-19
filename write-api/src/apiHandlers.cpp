@@ -39,15 +39,22 @@ void registerHandlers(httplib::Server& server, StorageClient& client) {
                    std::string key = req.matches[1].str();
                    s_totalGets.fetch_add(1, std::memory_order_relaxed);
 
-                   auto value = client.get(key);
-                   json body;
-                   if (value.has_value()) {
-                       body = {{"key", key}, {"value", value.value()}};
-                   } else {
+                   StorageResponse storageRes = client.get(key);
+                   std::string content = storageRes.body;
+                   if (storageRes.httpStatus == 404) {
                        res.status = 404;
-                       body = {{"error", "not_found"}, {"key", key}};
+                       content = json({{"error", "not_found"}, {"key", key}}).dump();
+                   } else if (!storageRes.success) {
+                       res.status = 502;
+                       content = json({{"error", "upstream_error"},
+                                       {"message", storageRes.errorMessage.empty()
+                                                       ? "storage returned HTTP " +
+                                                             std::to_string(storageRes.httpStatus)
+                                                       : storageRes.errorMessage}})
+                                     .dump();
+                       s_totalErrors.fetch_add(1, std::memory_order_relaxed);
                    }
-                   res.set_content(body.dump(), "application/json");
+                   res.set_content(content, "application/json");
                });
 
     // ── PUT /key/:id — validate then proxy the versioned write to storage ─
