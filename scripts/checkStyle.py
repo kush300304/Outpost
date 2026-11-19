@@ -8,6 +8,7 @@ Rules:
   file-header      a `/// @file` comment within the first five lines
   raw-new-delete   no `new T` or `delete p` expressions (`= delete` declarations are fine)
   history-comment  comments describe the current implementation, not its history
+  line-length      no line longer than the .clang-format ColumnLimit (100)
 
 Usage: scripts/checkStyle.py [file ...]   (default: every project .h/.cpp file)
 Exit status is 1 when any violation is found.
@@ -20,6 +21,7 @@ import sys
 PROJECT_DIRS = ["common", "edge", "router", "storage", "write-api"]
 CONTROL_WORDS = {"if", "for", "while", "switch", "catch"}
 QUALIFIERS = {"const", "override", "noexcept", "mutable", "final"}
+COLUMN_LIMIT = 100
 HISTORY_PATTERN = re.compile(
     r"\b(previously|formerly|changed from|used to|no longer|was changed|old version|"
     r"bug ?fix|fixed (?:the|a|an|bug|issue|in))\b",
@@ -179,6 +181,9 @@ def checkFile(path):
         before, _ = previousToken(code, match.start())
         if before not in ("=", "operator"):
             violations.append((path, code.count("\n", 0, match.start()) + 1, "raw-new-delete", "delete expression"))
+    for number, line in enumerate(text.splitlines(), start=1):
+        if len(line) > COLUMN_LIMIT:
+            violations.append((path, number, "line-length", f"{len(line)} columns"))
     for line, comment in comments:
         if HISTORY_PATTERN.search(comment):
             violations.append((path, line, "history-comment", comment.strip()[:80]))

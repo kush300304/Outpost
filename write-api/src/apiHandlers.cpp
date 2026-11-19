@@ -76,7 +76,8 @@ void registerHandlers(httplib::Server& server, StorageClient& client) {
         } else {
             StorageResponse storageRes =
                 client.put(key, request["value"].get<std::string>(),
-                           request["version"].get<uint64_t>(), request["writerId"].get<std::string>());
+                           request["version"].get<uint64_t>(),
+                           request["writerId"].get<std::string>());
             if (storageRes.success) {
                 content = storageRes.body;
             } else {

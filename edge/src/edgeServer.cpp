@@ -32,53 +32,6 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
       writeQueue_(config.walPath.empty() ? "/data/" + config.nodeId + "_write_queue.wal"
                                          : config.walPath,
                   config.walFsync) {
-    registerRoutes();
-    spdlog::info("[{}] EdgeServer initialized: cache={} entries, write-api={}:{}, queued={}",
-                 config_.nodeId, config_.cacheCapacity, config_.writeApiHost,
-                 config_.writeApiPort, writeQueue_.size());
-}
-
-EdgeServer::~EdgeServer() {
-    stop();
-}
-
-int EdgeServer::bind() {
-    int port = config_.port == 0 ? server_.bind_to_any_port(config_.bindAddress)
-                                 : (server_.bind_to_port(config_.bindAddress, config_.port)
-                                        ? config_.port
-                                        : -1);
-    if (port < 0) {
-        spdlog::error("[{}] Failed to bind {}:{}", config_.nodeId, config_.bindAddress,
-                      config_.port);
-    }
-    return port;
-}
-
-bool EdgeServer::serve() {
-    {
-        std::lock_guard<std::mutex> lock(stopMutex_);
-        stopping_ = false;
-    }
-    maintenanceThread_ = std::thread(&EdgeServer::maintenanceLoop, this);
-    spdlog::info("[{}] Serving", config_.nodeId);
-    bool served = server_.listen_after_bind();
-    stop();
-    return served;
-}
-
-void EdgeServer::stop() {
-    {
-        std::lock_guard<std::mutex> lock(stopMutex_);
-        stopping_ = true;
-    }
-    stopSignal_.notify_all();
-    server_.stop();
-    if (maintenanceThread_.joinable() && maintenanceThread_.get_id() != std::this_thread::get_id()) {
-        maintenanceThread_.join();
-    }
-}
-
-void EdgeServer::registerRoutes() {
     server_.Get("/health", [this](const httplib::Request& /*req*/, httplib::Response& res) {
         json body = {{"status", "healthy"},
                      {"service", "edge"},
@@ -210,6 +163,51 @@ void EdgeServer::registerRoutes() {
         };
         res.set_content(body.dump(2), "application/json");
     });
+
+    spdlog::info("[{}] EdgeServer initialized: cache={} entries, write-api={}:{}, queued={}",
+                 config_.nodeId, config_.cacheCapacity, config_.writeApiHost,
+                 config_.writeApiPort, writeQueue_.size());
+}
+
+EdgeServer::~EdgeServer() {
+    stop();
+}
+
+int EdgeServer::bind() {
+    int port = config_.port == 0 ? server_.bind_to_any_port(config_.bindAddress)
+                                 : (server_.bind_to_port(config_.bindAddress, config_.port)
+                                        ? config_.port
+                                        : -1);
+    if (port < 0) {
+        spdlog::error("[{}] Failed to bind {}:{}", config_.nodeId, config_.bindAddress,
+                      config_.port);
+    }
+    return port;
+}
+
+bool EdgeServer::serve() {
+    {
+        std::lock_guard<std::mutex> lock(stopMutex_);
+        stopping_ = false;
+    }
+    maintenanceThread_ = std::thread(&EdgeServer::maintenanceLoop, this);
+    spdlog::info("[{}] Serving", config_.nodeId);
+    bool served = server_.listen_after_bind();
+    stop();
+    return served;
+}
+
+void EdgeServer::stop() {
+    {
+        std::lock_guard<std::mutex> lock(stopMutex_);
+        stopping_ = true;
+    }
+    stopSignal_.notify_all();
+    server_.stop();
+    if (maintenanceThread_.joinable() &&
+        maintenanceThread_.get_id() != std::this_thread::get_id()) {
+        maintenanceThread_.join();
+    }
 }
 
 void EdgeServer::maintenanceLoop() {
@@ -241,45 +239,44 @@ void EdgeServer::maintenanceLoop() {
             }
         }
         if (breakerState_.load() == BreakerState::CLOSED && writeQueue_.size() > 0) {
-            drainQueue();
+            // Drain: send queued writes in order with their original versions and discard
+            // exactly the prefix the origin resolved; writes queued meanwhile stay queued.
+            std::vector<common::WalEntry> entries = writeQueue_.replay();
+            spdlog::info("[{}] Reconciling {} queued writes", config_.nodeId, entries.size());
+            uint64_t resolvedThrough = 0;
+            std::size_t delivered = 0;
+            std::size_t rejected = 0;
+            bool originFailed = false;
+            std::size_t index = 0;
+            while (!originFailed && index < entries.size()) {
+                const common::WalEntry& entry = entries[index];
+                OriginResponse result =
+                    originClient_.put(entry.key, entry.value, entry.version, entry.writerId);
+                if (result.success) {
+                    resolvedThrough = entry.sequenceNumber;
+                    ++delivered;
+                } else if (result.httpStatus >= 400 && result.httpStatus < 500) {
+                    resolvedThrough = entry.sequenceNumber;
+                    ++rejected;
+                    spdlog::error("[{}] Queued write for key={} rejected (HTTP {}): dropped",
+                                  config_.nodeId, entry.key, result.httpStatus);
+                } else {
+                    originFailed = true;
+                    consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
+                }
+                ++index;
+            }
+            std::size_t remaining = resolvedThrough > 0
+                                        ? writeQueue_.discardThrough(resolvedThrough)
+                                        : writeQueue_.size();
+            reconciledWrites_.fetch_add(delivered, std::memory_order_relaxed);
+            rejectedWrites_.fetch_add(rejected, std::memory_order_relaxed);
+            spdlog::info("[{}] Reconciliation finished: {} delivered, {} rejected, {} still queued",
+                         config_.nodeId, delivered, rejected, remaining);
         }
         lock.lock();
     }
     spdlog::info("[{}] Maintenance thread stopped", config_.nodeId);
-}
-
-void EdgeServer::drainQueue() {
-    std::vector<common::WalEntry> entries = writeQueue_.replay();
-    spdlog::info("[{}] Reconciling {} queued writes", config_.nodeId, entries.size());
-    uint64_t resolvedThrough = 0;
-    std::size_t delivered = 0;
-    std::size_t rejected = 0;
-    bool originFailed = false;
-    std::size_t index = 0;
-    while (!originFailed && index < entries.size()) {
-        const common::WalEntry& entry = entries[index];
-        OriginResponse result =
-            originClient_.put(entry.key, entry.value, entry.version, entry.writerId);
-        if (result.success) {
-            resolvedThrough = entry.sequenceNumber;
-            ++delivered;
-        } else if (result.httpStatus >= 400 && result.httpStatus < 500) {
-            resolvedThrough = entry.sequenceNumber;
-            ++rejected;
-            spdlog::error("[{}] Queued write for key={} rejected by origin (HTTP {}): dropped",
-                          config_.nodeId, entry.key, result.httpStatus);
-        } else {
-            originFailed = true;
-            consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
-        }
-        ++index;
-    }
-    std::size_t remaining =
-        resolvedThrough > 0 ? writeQueue_.discardThrough(resolvedThrough) : writeQueue_.size();
-    reconciledWrites_.fetch_add(delivered, std::memory_order_relaxed);
-    rejectedWrites_.fetch_add(rejected, std::memory_order_relaxed);
-    spdlog::info("[{}] Reconciliation finished: {} delivered, {} rejected, {} still queued",
-                 config_.nodeId, delivered, rejected, remaining);
 }
 
 }  // namespace edge

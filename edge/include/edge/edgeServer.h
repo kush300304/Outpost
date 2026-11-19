@@ -40,11 +40,11 @@ struct EdgeConfig {
     std::string writeApiHost = "write-api";                 ///< Write-API hostname.
     int writeApiPort = 9090;                                ///< Write-API port.
     std::size_t cacheCapacity = 1024;                       ///< LRU cache max entries.
-    int breakerFailureThreshold = 3;                        ///< Failed checks that open the breaker.
+    int breakerFailureThreshold = 3;                        ///< Failures that open the breaker.
     std::chrono::milliseconds breakerResetTimeout{5000};    ///< OPEN time before a probe.
     std::chrono::milliseconds healthCheckInterval{1000};    ///< Time between health checks.
-    std::chrono::milliseconds originTimeout{2000};          ///< Connect/read timeout to write-api.
-    std::string walPath;                                    ///< Queue WAL; empty → /data/<nodeId>…
+    std::chrono::milliseconds originTimeout{2000};          ///< Timeout for write-api calls.
+    std::string walPath;  ///< Queue WAL; empty means /data/<nodeId>_write_queue.wal.
     bool walFsync = true;                                   ///< fsync each queued write.
 };
 
@@ -73,10 +73,8 @@ public:
 private:
     enum class BreakerState { CLOSED, OPEN, HALF_OPEN };
 
-    void registerRoutes();
+    /// @brief Maintenance thread body: health checks, breaker state and queue draining.
     void maintenanceLoop();
-    /// @brief Send queued writes in order; discard exactly the prefix the origin resolved.
-    void drainQueue();
 
     EdgeConfig config_;
     httplib::Server server_;

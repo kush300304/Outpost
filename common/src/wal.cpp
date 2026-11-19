@@ -257,7 +257,8 @@ std::size_t WriteAheadLog::discardThrough(uint64_t sequenceNumber) {
     std::string tempPath = filePath_ + ".tmp";
     {
         FileHandle temp(std::fopen(tempPath.c_str(), "wb"));
-        bool written = temp && std::fwrite(kept.data(), 1, kept.size(), temp.get()) == kept.size() &&
+        bool written = temp &&
+                       std::fwrite(kept.data(), 1, kept.size(), temp.get()) == kept.size() &&
                        std::fflush(temp.get()) == 0 && ::fsync(::fileno(temp.get())) == 0;
         if (!written) {
             throw std::runtime_error("WAL: cannot write compacted log: " + tempPath);
