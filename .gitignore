@@ -1,11 +1,15 @@
 node_modules/
-build/
+build*/
 dist/
 coverage/
 .DS_Store
 *.log
 .env*
 !.env.example
-outpost-build-guide.md
-outpost-daily-plan.md
-outpost-project-spec.md
+
+# Personal copies of the spec documents at the repository root.
+# The tracked copies live in docs/.
+/outpost-build-guide.md
+/outpost-daily-plan.md
+/outpost-project-spec.md
+/outpost-dashboard-spec.md
