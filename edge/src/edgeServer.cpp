@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -204,6 +205,7 @@ void EdgeServer::registerRoutes() {
               {"staleServes", staleServes_.load()},
               {"queuedWrites", queuedWrites_.load()},
               {"reconciledWrites", reconciledWrites_.load()},
+              {"rejectedWrites", rejectedWrites_.load()},
               {"rateLimited", rateLimited_.load()}}},
         };
         res.set_content(body.dump(2), "application/json");
@@ -224,7 +226,6 @@ void EdgeServer::maintenanceLoop() {
             if (state != BreakerState::CLOSED) {
                 spdlog::info("[{}] Origin healthy — closing circuit breaker", config_.nodeId);
                 breakerState_.store(BreakerState::CLOSED);
-                reconcileQueuedWrites();
             }
         } else {
             int failures = consecutiveFailures_.fetch_add(1) + 1;
@@ -239,27 +240,46 @@ void EdgeServer::maintenanceLoop() {
                 breakerState_.store(BreakerState::HALF_OPEN);
             }
         }
+        if (breakerState_.load() == BreakerState::CLOSED && writeQueue_.size() > 0) {
+            drainQueue();
+        }
         lock.lock();
     }
     spdlog::info("[{}] Maintenance thread stopped", config_.nodeId);
 }
 
-void EdgeServer::reconcileQueuedWrites() {
-    auto entries = writeQueue_.replay();
+void EdgeServer::drainQueue() {
+    std::vector<common::WalEntry> entries = writeQueue_.replay();
     spdlog::info("[{}] Reconciling {} queued writes", config_.nodeId, entries.size());
-    std::size_t succeeded = 0;
-    std::size_t failed = 0;
-    for (const auto& entry : entries) {
-        auto result = originClient_.put(entry.key, entry.value, entry.version, entry.writerId);
-        succeeded += result.success ? 1 : 0;
-        failed += result.success ? 0 : 1;
+    uint64_t resolvedThrough = 0;
+    std::size_t delivered = 0;
+    std::size_t rejected = 0;
+    bool originFailed = false;
+    std::size_t index = 0;
+    while (!originFailed && index < entries.size()) {
+        const common::WalEntry& entry = entries[index];
+        OriginResponse result =
+            originClient_.put(entry.key, entry.value, entry.version, entry.writerId);
+        if (result.success) {
+            resolvedThrough = entry.sequenceNumber;
+            ++delivered;
+        } else if (result.httpStatus >= 400 && result.httpStatus < 500) {
+            resolvedThrough = entry.sequenceNumber;
+            ++rejected;
+            spdlog::error("[{}] Queued write for key={} rejected by origin (HTTP {}): dropped",
+                          config_.nodeId, entry.key, result.httpStatus);
+        } else {
+            originFailed = true;
+            consecutiveFailures_.fetch_add(1, std::memory_order_relaxed);
+        }
+        ++index;
     }
-    reconciledWrites_.fetch_add(succeeded, std::memory_order_relaxed);
-    if (failed == 0) {
-        writeQueue_.truncate();
-    }
-    spdlog::info("[{}] Reconciliation finished: {} applied, {} failed", config_.nodeId, succeeded,
-                 failed);
+    std::size_t remaining =
+        resolvedThrough > 0 ? writeQueue_.discardThrough(resolvedThrough) : writeQueue_.size();
+    reconciledWrites_.fetch_add(delivered, std::memory_order_relaxed);
+    rejectedWrites_.fetch_add(rejected, std::memory_order_relaxed);
+    spdlog::info("[{}] Reconciliation finished: {} delivered, {} rejected, {} still queued",
+                 config_.nodeId, delivered, rejected, remaining);
 }
 
 }  // namespace edge

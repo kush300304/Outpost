@@ -9,8 +9,10 @@
 ///   PUT  /key/:id         → versioned write, forwarded to write-api or queued in the edge WAL
 ///   GET  /debug/stats     → cache, breaker and queue statistics
 ///
-/// A background maintenance thread health-checks write-api every healthCheckInterval and
-/// drives the breaker state.
+/// A background maintenance thread health-checks write-api every healthCheckInterval, drives the
+/// breaker state and, whenever the breaker is CLOSED and writes are queued, drains the queue: each
+/// queued write is sent in order with its original version, and only the prefix the origin
+/// resolved is removed from the WAL, so writes queued during a drain are never lost.
 
 #include <atomic>
 #include <chrono>
@@ -73,7 +75,8 @@ private:
 
     void registerRoutes();
     void maintenanceLoop();
-    void reconcileQueuedWrites();
+    /// @brief Send queued writes in order; discard exactly the prefix the origin resolved.
+    void drainQueue();
 
     EdgeConfig config_;
     httplib::Server server_;
@@ -92,6 +95,7 @@ private:
     std::atomic<uint64_t> staleServes_{0};
     std::atomic<uint64_t> queuedWrites_{0};
     std::atomic<uint64_t> reconciledWrites_{0};
+    std::atomic<uint64_t> rejectedWrites_{0};
     std::atomic<uint64_t> rateLimited_{0};
     std::atomic<uint64_t> lastVersion_{0};  ///< Last stamped write version (µs since epoch).
 
