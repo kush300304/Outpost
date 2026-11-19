@@ -36,14 +36,13 @@ void registerHandlers(httplib::Server& server, StorageClient& client) {
                    s_totalGets.fetch_add(1, std::memory_order_relaxed);
 
                    auto value = client.get(key);
-                   if (!value.has_value()) {
-                       json body = {{"error", "not_found"}, {"key", key}};
+                   json body;
+                   if (value.has_value()) {
+                       body = {{"key", key}, {"value", value.value()}};
+                   } else {
                        res.status = 404;
-                       res.set_content(body.dump(), "application/json");
-                       return;
+                       body = {{"error", "not_found"}, {"key", key}};
                    }
-
-                   json body = {{"key", key}, {"value", value.value()}};
                    res.set_content(body.dump(), "application/json");
                });
 
