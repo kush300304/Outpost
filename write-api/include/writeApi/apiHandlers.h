@@ -17,7 +17,7 @@ namespace writeApi {
 /// @brief Register all HTTP routes on the given server.
 ///
 /// Routes:
-///   GET    /health       → 200 health check
+///   GET    /health       → 200 when storage answers its /health within 1 s, else 503
 ///   GET    /key/:id      → proxy GET to storage
 ///   PUT    /key/:id      → validate {"value","version","writerId"}, then proxy to storage
 ///   GET    /debug/stats  → service diagnostics

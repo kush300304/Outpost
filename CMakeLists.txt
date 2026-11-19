@@ -60,6 +60,6 @@ endif()
 
 # Include submodules and services
 add_subdirectory(common)
-add_subdirectory(edge)
-add_subdirectory(write-api)
 add_subdirectory(storage)
+add_subdirectory(write-api)
+add_subdirectory(edge)

@@ -23,9 +23,13 @@ constexpr std::size_t kMaxKeyBytes = 256;
 constexpr std::size_t kMaxValueBytes = 1024 * 1024;
 
 void registerHandlers(httplib::Server& server, StorageClient& client) {
-    // ── Health check ────────────────────────────────────────────────────
-    server.Get("/health", [](const httplib::Request& /*req*/, httplib::Response& res) {
-        json body = {{"status", "healthy"}, {"service", "write-api"}};
+    // ── Health: healthy only when storage answers /health within 1 s ────
+    server.Get("/health", [&client](const httplib::Request& /*req*/, httplib::Response& res) {
+        bool storageUp = client.isHealthy();
+        res.status = storageUp ? 200 : 503;
+        json body = {{"status", storageUp ? "healthy" : "unhealthy"},
+                     {"service", "write-api"},
+                     {"storage", storageUp ? "up" : "down"}};
         res.set_content(body.dump(), "application/json");
     });
 
