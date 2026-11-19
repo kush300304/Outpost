@@ -4,6 +4,7 @@
 #include "common/tokenBucket.h"
 
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -90,4 +91,9 @@ TEST(TokenBucketTest, CapacityAndRefillRate) {
     TokenBucket bucket(42, 3.14);
     EXPECT_EQ(bucket.capacity(), 42u);
     EXPECT_DOUBLE_EQ(bucket.refillRate(), 3.14);
+}
+
+TEST(TokenBucketTest, RejectsInvalidConfiguration) {
+    EXPECT_THROW(TokenBucket(0, 1.0), std::invalid_argument);
+    EXPECT_THROW(TokenBucket(10, -1.0), std::invalid_argument);
 }
