@@ -545,3 +545,25 @@ TEST_F(EdgeServerTest, ExpiredEntryIsServedStaleWhenOriginFails) {
     EXPECT_EQ(res->get_header_value("X-Cache"), "STALE");
     EXPECT_EQ(json::parse(res->body)["value"], "origin-k");
 }
+
+TEST_F(EdgeServerTest, ConcurrentRequestsThroughTheEdgeAreRaceFree) {
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 0ms;
+    RunningEdge edge(cfg);
+    std::vector<std::thread> clients;
+    for (int t = 0; t < 8; ++t) {
+        clients.emplace_back([&edge, t] {
+            for (int i = 0; i < 25; ++i) {
+                std::string key = "c" + std::to_string(t) + "_" + std::to_string(i);
+                edge.client().Get("/key/" + key);
+                edge.client().Put("/key/" + key, "v", "text/plain");
+            }
+        });
+    }
+    for (auto& client : clients) {
+        client.join();
+    }
+    EXPECT_EQ(edge.stats()["requests"]["total"], 400);
+}

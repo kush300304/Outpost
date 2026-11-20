@@ -7,6 +7,7 @@
 /// breaker wraps calls through this client — when the breaker opens, the
 /// edge serves stale cache instead of calling through here.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -58,8 +59,8 @@ private:
     std::string host_;
     int port_;
     std::chrono::milliseconds timeout_;
-    uint64_t totalRequests_ = 0;
-    uint64_t failedRequests_ = 0;
+    std::atomic<uint64_t> totalRequests_{0};   ///< Updated from concurrent request threads.
+    std::atomic<uint64_t> failedRequests_{0};
 };
 
 }  // namespace edge
