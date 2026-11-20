@@ -13,6 +13,8 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "common/requestLimits.h"
+
 using json = nlohmann::json;
 using namespace std::chrono;
 
@@ -125,11 +127,18 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         totalWrites_.fetch_add(1, std::memory_order_relaxed);
 
         std::string value = req.body;
-        bool valid = !req.body.empty();
+        std::string invalid = req.body.empty() ? "request body is required" : "";
         json parsed = json::parse(req.body, nullptr, false);
         if (!parsed.is_discarded()) {
-            valid = parsed.is_object() && parsed.contains("value") && parsed["value"].is_string();
-            value = valid ? parsed["value"].get<std::string>() : std::string();
+            bool shaped =
+                parsed.is_object() && parsed.contains("value") && parsed["value"].is_string();
+            value = shaped ? parsed["value"].get<std::string>() : std::string();
+            invalid = shaped ? "" : "body must be raw text or JSON {\"value\":string}";
+        }
+        if (key.size() > common::kMaxKeyBytes) {
+            invalid = "key exceeds 256 bytes";
+        } else if (value.size() > common::kMaxValueBytes) {
+            invalid = "value exceeds 1 MiB";
         }
 
         std::string content;
@@ -139,11 +148,9 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             res.status = 429;
             res.set_header("Retry-After", "1");
             content = kRateLimitedBody;
-        } else if (!valid) {
+        } else if (!invalid.empty()) {
             res.status = 400;
-            content = json({{"error", "bad_request"},
-                            {"message", "body must be raw text or JSON {\"value\":string}"}})
-                          .dump();
+            content = json({{"error", "bad_request"}, {"message", invalid}}).dump();
         } else {
             uint64_t now = static_cast<uint64_t>(
                 duration_cast<microseconds>(system_clock::now().time_since_epoch()).count());

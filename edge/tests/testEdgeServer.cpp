@@ -492,3 +492,22 @@ TEST_F(EdgeServerTest, RejectsZeroTrackedClients) {
     cfg.maxTrackedClients = 0;
     EXPECT_THROW(EdgeServer server(cfg), std::invalid_argument);
 }
+
+// ── Phase D: remaining v1 ───────────────────────────────────────────────
+
+TEST_F(EdgeServerTest, InvalidWriteIsRejectedUpFrontEvenWhileDegraded) {
+    FakeOrigin origin;
+    origin.healthy = false;
+    RunningEdge edge(config(origin.port()));
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+
+    auto longKey = edge.client().Put("/key/" + std::string(257, 'k'), "v", "text/plain");
+    auto bigValue = edge.client().Put("/key/big", std::string(1024 * 1024 + 1, 'v'), "text/plain");
+    auto atLimits = edge.client().Put("/key/" + std::string(256, 'k'),
+                                      std::string(1024 * 1024, 'v'), "text/plain");
+    ASSERT_TRUE(longKey && bigValue && atLimits);
+    EXPECT_EQ(longKey->status, 400);
+    EXPECT_EQ(bigValue->status, 400);
+    EXPECT_EQ(atLimits->status, 202);
+    EXPECT_EQ(edge.pending(), 1u);
+}

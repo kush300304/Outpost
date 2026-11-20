@@ -9,6 +9,8 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "common/requestLimits.h"
+
 using json = nlohmann::json;
 
 namespace outpost {
@@ -19,8 +21,6 @@ static std::atomic<uint64_t> s_totalGets{0};
 static std::atomic<uint64_t> s_totalPuts{0};
 static std::atomic<uint64_t> s_totalErrors{0};
 
-constexpr std::size_t kMaxKeyBytes = 256;
-constexpr std::size_t kMaxValueBytes = 1024 * 1024;
 
 void registerHandlers(httplib::Server& server, StorageClient& client) {
     // ── Health: healthy only when storage answers /health within 1 s ────
@@ -64,12 +64,12 @@ void registerHandlers(httplib::Server& server, StorageClient& client) {
         json request = json::parse(req.body, nullptr, false);
 
         std::string error;
-        if (key.size() > kMaxKeyBytes) {
+        if (key.size() > common::kMaxKeyBytes) {
             error = "key exceeds 256 bytes";
         } else if (!request.is_object() || !request.contains("value") ||
                    !request["value"].is_string()) {
             error = "body must be JSON with a string \"value\"";
-        } else if (request["value"].get_ref<const std::string&>().size() > kMaxValueBytes) {
+        } else if (request["value"].get_ref<const std::string&>().size() > common::kMaxValueBytes) {
             error = "value exceeds 1 MiB";
         } else if (!request.contains("version") || !request["version"].is_number_unsigned() ||
                    request["version"].get<uint64_t>() == 0) {
