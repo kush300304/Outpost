@@ -4,6 +4,7 @@
 #include "edge/edgeServer.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <optional>
 #include <stdexcept>
@@ -33,6 +34,11 @@ std::string clientIdOf(const httplib::Request& req) {
     return first.empty() ? req.remote_addr : first;
 }
 
+/// Milliseconds since the Unix epoch, for event timestamps.
+int64_t epochMs() {
+    return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+}
+
 const char* const kRateLimitedBody =
     R"({"error":"rate_limited","message":"too many requests from this client"})";
 
@@ -53,8 +59,18 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             "EdgeConfig: maxTrackedClients and rateLimitBurst must be > 0, rateLimitPerSec >= 0");
     }
     breaker_.onTransition([this](common::BreakerState from, common::BreakerState to) {
-        spdlog::warn("[{}] Circuit breaker {} -> {}", config_.nodeId,
-                     common::breakerStateToString(from), common::breakerStateToString(to));
+        std::string change = std::string(common::breakerStateToString(from)) + " -> " +
+                             common::breakerStateToString(to);
+        spdlog::warn("[{}] Circuit breaker {}", config_.nodeId, change);
+        {
+            std::lock_guard<std::mutex> lock(eventsMutex_);
+            transitions_.push_back(Transition{epochMs(), common::breakerStateToString(from),
+                                              common::breakerStateToString(to)});
+            if (transitions_.size() > kMaxTransitions) {
+                transitions_.pop_front();
+            }
+        }
+        recordEvent("breaker", change);
     });
 
     server_.Get("/health", [this](const httplib::Request& /*req*/, httplib::Response& res) {
@@ -72,11 +88,12 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
 
         json body;
         std::string cacheHeader = "MISS";
-        bool admitted = bucketFor(clientIdOf(req))->tryConsume();
+        std::string clientId = clientIdOf(req);
+        bool admitted = bucketFor(clientId)->tryConsume();
         bool closed = breaker_.state() == common::BreakerState::CLOSED;
         auto cached = admitted ? cache_.lookup(key) : std::nullopt;
         if (!admitted) {
-            rateLimited_.fetch_add(1, std::memory_order_relaxed);
+            recordRateLimit(clientId);
             res.status = 429;
             res.set_header("Retry-After", "1");
             cacheHeader.clear();
@@ -149,9 +166,10 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         }
 
         std::string content;
-        bool admitted = bucketFor(clientIdOf(req))->tryConsume();
+        std::string clientId = clientIdOf(req);
+        bool admitted = bucketFor(clientId)->tryConsume();
         if (!admitted) {
-            rateLimited_.fetch_add(1, std::memory_order_relaxed);
+            recordRateLimit(clientId);
             res.status = 429;
             res.set_header("Retry-After", "1");
             content = kRateLimitedBody;
@@ -206,34 +224,62 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         res.set_content(content, "application/json");
     });
 
-    server_.Get("/debug/stats", [this](const httplib::Request& /*req*/, httplib::Response& res) {
+    server_.Get("/debug/stats", [this](const httplib::Request& req, httplib::Response& res) {
         auto cacheStats = cache_.stats();
+        double callerTokens = bucketFor(clientIdOf(req))->tokensAvailable();
+        std::size_t trackedClients = 0;
+        {
+            std::lock_guard<std::mutex> lock(clientsMutex_);
+            trackedClients = clients_.size();
+        }
+        json transitions = json::array();
+        json events = json::array();
+        {
+            std::lock_guard<std::mutex> lock(eventsMutex_);
+            for (const Transition& transition : transitions_) {
+                transitions.push_back(
+                    {{"atMs", transition.atMs}, {"from", transition.from}, {"to", transition.to}});
+            }
+            for (const Event& event : events_) {
+                events.push_back(
+                    {{"atMs", event.atMs}, {"type", event.type}, {"message", event.message}});
+            }
+        }
         json body = {
             {"service", "edge"},
             {"nodeId", config_.nodeId},
+            {"uptimeMs", duration_cast<milliseconds>(steady_clock::now() - startedAt_).count()},
             {"cache",
              {{"size", cache_.size()},
               {"capacity", cache_.capacity()},
               {"ttlMs", cache_.ttl().count()},
               {"hits", cacheStats.hits},
               {"misses", cacheStats.misses},
+              {"staleServes", staleServes_.load()},
               {"evictions", cacheStats.evictions},
               {"hitRate", cacheStats.hitRate()}}},
             {"circuitBreaker",
              {{"state", common::breakerStateToString(breaker_.state())},
               {"consecutiveFailures", breaker_.consecutiveFailures()},
               {"failureThreshold", config_.breakerFailureThreshold},
-              {"resetTimeoutMs", config_.breakerResetTimeout.count()}}},
-            {"writeQueue", {{"pending", writeQueue_.size()}}},
+              {"resetTimeoutMs", config_.breakerResetTimeout.count()},
+              {"recentTransitions", transitions}}},
+            {"rateLimiter",
+             {{"capacity", config_.rateLimitBurst},
+              {"refillPerSec", config_.rateLimitPerSec},
+              {"trackedClients", trackedClients},
+              {"callerTokensRemaining", callerTokens},
+              {"rejected", rateLimited_.load()}}},
+            {"writeQueue",
+             {{"pending", writeQueue_.size()},
+              {"queued", queuedWrites_.load()},
+              {"reconciled", reconciledWrites_.load()},
+              {"rejected", rejectedWrites_.load()}}},
             {"requests",
              {{"total", totalRequests_.load()},
               {"reads", totalReads_.load()},
-              {"writes", totalWrites_.load()},
-              {"staleServes", staleServes_.load()},
-              {"queuedWrites", queuedWrites_.load()},
-              {"reconciledWrites", reconciledWrites_.load()},
-              {"rejectedWrites", rejectedWrites_.load()},
-              {"rateLimited", rateLimited_.load()}}},
+              {"writes", totalWrites_.load()}}},
+            {"events", events},
         };
         res.set_content(body.dump(2), "application/json");
     });
@@ -305,6 +351,8 @@ void EdgeServer::maintenanceLoop() {
             // exactly the prefix the origin resolved; writes queued meanwhile stay queued.
             std::vector<common::WalEntry> entries = writeQueue_.replay();
             spdlog::info("[{}] Reconciling {} queued writes", config_.nodeId, entries.size());
+            recordEvent("reconcile", "started: " + std::to_string(entries.size()) +
+                                         " queued writes");
             uint64_t resolvedThrough = 0;
             std::size_t delivered = 0;
             std::size_t rejected = 0;
@@ -335,10 +383,33 @@ void EdgeServer::maintenanceLoop() {
             rejectedWrites_.fetch_add(rejected, std::memory_order_relaxed);
             spdlog::info("[{}] Reconciliation finished: {} delivered, {} rejected, {} still queued",
                          config_.nodeId, delivered, rejected, remaining);
+            recordEvent("reconcile", "finished: " + std::to_string(delivered) + " delivered, " +
+                                         std::to_string(rejected) + " rejected, " +
+                                         std::to_string(remaining) + " still queued");
         }
         lock.lock();
     }
     spdlog::info("[{}] Maintenance thread stopped", config_.nodeId);
+}
+
+void EdgeServer::recordEvent(const std::string& type, const std::string& message) {
+    std::lock_guard<std::mutex> lock(eventsMutex_);
+    events_.push_back(Event{epochMs(), type, message});
+    if (events_.size() > kMaxEvents) {
+        events_.pop_front();
+    }
+}
+
+void EdgeServer::recordRateLimit(const std::string& clientId) {
+    rateLimited_.fetch_add(1, std::memory_order_relaxed);
+    rateLimitedSinceEvent_.fetch_add(1, std::memory_order_relaxed);
+    int64_t now = epochMs();
+    int64_t last = lastRateLimitEventMs_.load();
+    if (now - last >= 1000 && lastRateLimitEventMs_.compare_exchange_strong(last, now)) {
+        uint64_t count = rateLimitedSinceEvent_.exchange(0);
+        recordEvent("rateLimit", std::to_string(count) +
+                                     " request(s) rejected with 429; last client " + clientId);
+    }
 }
 
 std::shared_ptr<common::TokenBucket> EdgeServer::bucketFor(const std::string& clientId) {

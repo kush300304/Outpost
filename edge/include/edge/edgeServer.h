@@ -7,7 +7,7 @@
 ///   GET  /health          → 200 health check
 ///   GET  /key/:id         → cache-aside read
 ///   PUT  /key/:id         → versioned write, forwarded to write-api or queued in the edge WAL
-///   GET  /debug/stats     → cache, breaker and queue statistics
+///   GET  /debug/stats     → statistics and recent events; schema in docs/statsApi.md
 ///
 /// Failure detection: a common::CircuitBreaker guards write-api. A background maintenance thread
 /// health-checks write-api whenever breaker.isAllowed() says so: every healthCheckInterval while
@@ -32,6 +32,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -101,10 +102,31 @@ private:
     ///        exist, buckets idle for 60 s are evicted, else the least recently seen one.
     std::shared_ptr<common::TokenBucket> bucketFor(const std::string& clientId);
 
+    /// @brief Append an event to the log, keeping the latest kMaxEvents.
+    void recordEvent(const std::string& type, const std::string& message);
+
+    /// @brief Count a 429 for clientId; emits at most one rateLimit event per second.
+    void recordRateLimit(const std::string& clientId);
+
     struct ClientBucket {
         std::shared_ptr<common::TokenBucket> bucket;
         std::chrono::steady_clock::time_point lastSeen;
     };
+
+    struct Event {
+        int64_t atMs;  ///< Milliseconds since the Unix epoch.
+        std::string type;
+        std::string message;
+    };
+
+    struct Transition {
+        int64_t atMs;  ///< Milliseconds since the Unix epoch.
+        std::string from;
+        std::string to;
+    };
+
+    static constexpr std::size_t kMaxEvents = 100;
+    static constexpr std::size_t kMaxTransitions = 10;
 
     EdgeConfig config_;
     httplib::Server server_;
@@ -117,6 +139,12 @@ private:
     std::mutex joinMutex_;  ///< Serializes concurrent stop() calls joining the thread.
     std::mutex clientsMutex_;
     std::unordered_map<std::string, ClientBucket> clients_;
+    std::mutex eventsMutex_;
+    std::deque<Event> events_;
+    std::deque<Transition> transitions_;
+    std::atomic<int64_t> lastRateLimitEventMs_{0};
+    std::atomic<uint64_t> rateLimitedSinceEvent_{0};
+    const std::chrono::steady_clock::time_point startedAt_ = std::chrono::steady_clock::now();
     std::mutex stopMutex_;
     std::condition_variable stopSignal_;
     bool stopping_ = false;

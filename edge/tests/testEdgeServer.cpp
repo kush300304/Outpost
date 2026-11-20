@@ -11,7 +11,10 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <regex>
+#include <set>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -465,7 +468,7 @@ TEST_F(EdgeServerTest, ClientOverBurstGets429WhileOtherClientIsServed) {
     auto other = edge.client().Get("/key/k", clientB);
     ASSERT_TRUE(other);
     EXPECT_NE(other->status, 429);
-    EXPECT_EQ(edge.stats()["requests"]["rateLimited"], 1);
+    EXPECT_EQ(edge.stats()["rateLimiter"]["rejected"], 1);
 }
 
 TEST_F(EdgeServerTest, TrackedClientsStayBoundedAndEvictedClientGetsFreshBucket) {
@@ -568,4 +571,73 @@ TEST_F(EdgeServerTest, ConcurrentRequestsThroughTheEdgeAreRaceFree) {
     }
     EXPECT_EQ(unanswered.load(), 0);
     EXPECT_EQ(edge.stats()["requests"]["total"], 400);
+}
+
+namespace {
+
+/// Checks that value at the dotted path (with "[]" for array elements) has the documented type.
+bool hasDocumentedField(const json& value, const std::string& path, const std::string& type) {
+    std::size_t dot = path.find('.');
+    std::string head = path.substr(0, dot);
+    std::string rest = dot == std::string::npos ? "" : path.substr(dot + 1);
+    bool isArrayStep = head.size() > 2 && head.compare(head.size() - 2, 2, "[]") == 0;
+    std::string name = isArrayStep ? head.substr(0, head.size() - 2) : head;
+    bool ok = value.is_object() && value.contains(name);
+    if (ok && isArrayStep) {
+        ok = value[name].is_array();
+        for (const json& element : ok ? value[name] : json::array()) {
+            ok = ok && hasDocumentedField(element, rest, type);
+        }
+    } else if (ok && !rest.empty()) {
+        ok = hasDocumentedField(value[name], rest, type);
+    } else if (ok) {
+        const json& field = value[name];
+        ok = (type == "number" && field.is_number()) || (type == "string" && field.is_string()) ||
+             (type == "array" && field.is_array()) || (type == "object" && field.is_object()) ||
+             (type == "boolean" && field.is_boolean());
+    }
+    return ok;
+}
+
+}  // namespace
+
+TEST_F(EdgeServerTest, StatsMatchTheDocumentedSchema) {
+    std::ifstream doc(std::string(OUTPOST_SOURCE_DIR) + "/docs/statsApi.md");
+    ASSERT_TRUE(doc.is_open());
+    std::vector<std::pair<std::string, std::string>> fields;
+    std::regex row(R"(^\| `([^`]+)` \| (\w+) \|)");
+    for (std::string line; std::getline(doc, line);) {
+        std::smatch match;
+        if (std::regex_search(line, match, row)) {
+            fields.emplace_back(match[1].str(), match[2].str());
+        }
+    }
+    ASSERT_GE(fields.size(), 30u) << "could not read the field table from docs/statsApi.md";
+
+    FakeOrigin origin;
+    origin.healthy = false;
+    EdgeConfig cfg = config(origin.port());
+    cfg.rateLimitBurst = 2;
+    cfg.rateLimitPerSec = 0.5;
+    RunningEdge edge(cfg);
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+    auto queued = edge.client().Put("/key/k", "v", "text/plain");
+    ASSERT_TRUE(queued);
+    origin.healthy = true;
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "CLOSED" && edge.pending() == 0; }));
+    httplib::Headers greedy = {{"X-Forwarded-For", "192.0.2.50"}};
+    for (int i = 0; i < 3; ++i) {
+        edge.client().Get("/key/k", greedy);
+    }
+
+    json stats = edge.stats();
+    for (const auto& [path, type] : fields) {
+        EXPECT_TRUE(hasDocumentedField(stats, path, type)) << path << " should be " << type;
+    }
+    std::set<std::string> eventTypes;
+    for (const json& event : stats.value("events", json::array())) {
+        eventTypes.insert(event.value("type", ""));
+    }
+    EXPECT_EQ(eventTypes, (std::set<std::string>{"breaker", "reconcile", "rateLimit"}));
+    EXPECT_FALSE(stats["circuitBreaker"]["recentTransitions"].empty());
 }
