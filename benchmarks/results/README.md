@@ -5,9 +5,11 @@ settings; `k6-summary.json` holds k6's raw output; chaos runs keep their raw log
 
 | Run | What it is |
 |---|---|
-| `2026-11-20T205708Z-chaos` | **Chaos test** (headline, gate E): storage, write-api and a mid-drain edge killed under load |
+| `2026-11-20T212929Z-chaos` | **Chaos test**, final check from a fresh clone (`docs/finalCheck.md`) |
+| `2026-11-20T205708Z-chaos` | **Chaos test** (gate E, cited in README): storage, write-api and a mid-drain edge killed under load |
 | `2026-11-20T202426Z-chaos` | Chaos test on an earlier build (before the Nagle and worker-pool fixes) |
-| `2026-11-20T205135Z-benchmark` | **Benchmark** (headline): 32 clients, 60 s, durable writes (fsync on) |
+| `2026-11-20T213128Z-benchmark` | **Benchmark**, final check from a fresh clone (`docs/finalCheck.md`) |
+| `2026-11-20T205135Z-benchmark` | **Benchmark** (gate E, cited in README): 32 clients, 60 s, durable writes (fsync on) |
 | `2026-11-20T205318Z-benchmark` | Comparison: same workload with fsync off |
 | `2026-11-20T204203Z-benchmark` | Diagnostic: 8 clients, before the worker-pool fix |
 | `2026-11-20T204012Z-benchmark` | Superseded: before the worker-pool fix (cache-hit p99 107 ms) |
