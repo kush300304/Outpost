@@ -4,6 +4,9 @@
 #include "edge/edgeServer.h"
 
 #include <algorithm>
+#include <iterator>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -16,6 +19,23 @@ using namespace std::chrono;
 namespace outpost {
 namespace edge {
 
+namespace {
+
+/// The requesting client: the first X-Forwarded-For hop (set by the router on a trusted network),
+/// or the socket peer address when the header is absent.
+std::string clientIdOf(const httplib::Request& req) {
+    std::string forwarded = req.get_header_value("X-Forwarded-For");
+    std::string first = forwarded.substr(0, forwarded.find(','));
+    first.erase(0, first.find_first_not_of(' '));
+    first.erase(first.find_last_not_of(' ') + 1);
+    return first.empty() ? req.remote_addr : first;
+}
+
+const char* const kRateLimitedBody =
+    R"({"error":"rate_limited","message":"too many requests from this client"})";
+
+}  // namespace
+
 EdgeServer::EdgeServer(const EdgeConfig& config)
     : config_(config),
       originClient_(config.writeApiHost, config.writeApiPort, config.originTimeout),
@@ -25,6 +45,11 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                   config.walFsync),
       breaker_(common::CircuitBreakerConfig{config.breakerFailureThreshold,
                                             config.breakerResetTimeout}) {
+    if (config_.maxTrackedClients == 0 || config_.rateLimitBurst == 0 ||
+        config_.rateLimitPerSec < 0.0) {
+        throw std::invalid_argument(
+            "EdgeConfig: maxTrackedClients and rateLimitBurst must be > 0, rateLimitPerSec >= 0");
+    }
     breaker_.onTransition([this](common::BreakerState from, common::BreakerState to) {
         spdlog::warn("[{}] Circuit breaker {} -> {}", config_.nodeId,
                      common::breakerStateToString(from), common::breakerStateToString(to));
@@ -45,9 +70,16 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
 
         json body;
         std::string cacheHeader = "MISS";
+        bool admitted = bucketFor(clientIdOf(req))->tryConsume();
         bool closed = breaker_.state() == common::BreakerState::CLOSED;
-        auto cached = cache_.get(key);
-        if (cached.has_value()) {
+        auto cached = admitted ? cache_.get(key) : std::nullopt;
+        if (!admitted) {
+            rateLimited_.fetch_add(1, std::memory_order_relaxed);
+            res.status = 429;
+            res.set_header("Retry-After", "1");
+            cacheHeader.clear();
+            body = json::parse(kRateLimitedBody);
+        } else if (cached.has_value()) {
             cacheHeader = closed ? "HIT" : "STALE";
             staleServes_.fetch_add(closed ? 0 : 1, std::memory_order_relaxed);
             body = {{"key", key}, {"value", cached.value()}};
@@ -80,7 +112,9 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                         {"key", key}};
             }
         }
-        res.set_header("X-Cache", cacheHeader);
+        if (!cacheHeader.empty()) {
+            res.set_header("X-Cache", cacheHeader);
+        }
         res.set_header("X-Node", config_.nodeId);
         res.set_content(body.dump(), "application/json");
     });
@@ -99,7 +133,13 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         }
 
         std::string content;
-        if (!valid) {
+        bool admitted = bucketFor(clientIdOf(req))->tryConsume();
+        if (!admitted) {
+            rateLimited_.fetch_add(1, std::memory_order_relaxed);
+            res.status = 429;
+            res.set_header("Retry-After", "1");
+            content = kRateLimitedBody;
+        } else if (!valid) {
             res.status = 400;
             content = json({{"error", "bad_request"},
                             {"message", "body must be raw text or JSON {\"value\":string}"}})
@@ -284,6 +324,32 @@ void EdgeServer::maintenanceLoop() {
         lock.lock();
     }
     spdlog::info("[{}] Maintenance thread stopped", config_.nodeId);
+}
+
+std::shared_ptr<common::TokenBucket> EdgeServer::bucketFor(const std::string& clientId) {
+    std::lock_guard<std::mutex> lock(clientsMutex_);
+    steady_clock::time_point now = steady_clock::now();
+    auto it = clients_.find(clientId);
+    if (it == clients_.end() && clients_.size() >= config_.maxTrackedClients) {
+        for (auto entry = clients_.begin(); entry != clients_.end();) {
+            entry = now - entry->second.lastSeen > seconds(60) ? clients_.erase(entry)
+                                                               : std::next(entry);
+        }
+        if (clients_.size() >= config_.maxTrackedClients) {
+            clients_.erase(std::min_element(clients_.begin(), clients_.end(),
+                                            [](const auto& left, const auto& right) {
+                                                return left.second.lastSeen <
+                                                       right.second.lastSeen;
+                                            }));
+        }
+    }
+    if (it == clients_.end()) {
+        auto bucket = std::make_shared<common::TokenBucket>(config_.rateLimitBurst,
+                                                            config_.rateLimitPerSec);
+        it = clients_.emplace(clientId, ClientBucket{bucket, now}).first;
+    }
+    it->second.lastSeen = now;
+    return it->second.bucket;
 }
 
 }  // namespace edge

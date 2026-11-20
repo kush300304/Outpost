@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -440,4 +441,54 @@ TEST_F(EdgeServerTest, KeyWithReservedCharactersRoundTripsToStorage) {
     EXPECT_EQ(get->status, 200);
     EXPECT_EQ(get->get_header_value("X-Cache"), "MISS");
     EXPECT_EQ(json::parse(get->body)["value"], "tricky");
+}
+
+TEST_F(EdgeServerTest, ClientOverBurstGets429WhileOtherClientIsServed) {
+    FakeOrigin origin;
+    EdgeConfig cfg = config(origin.port());
+    cfg.rateLimitBurst = 5;
+    cfg.rateLimitPerSec = 1.0;
+    RunningEdge edge(cfg);
+    httplib::Headers clientA = {{"X-Forwarded-For", "10.0.0.1"}};
+    httplib::Headers clientB = {{"X-Forwarded-For", "10.0.0.2, 172.18.0.5"}};
+
+    for (int i = 0; i < 5; ++i) {
+        auto res = edge.client().Get("/key/k", clientA);
+        ASSERT_TRUE(res);
+        EXPECT_NE(res->status, 429) << "request " << i;
+    }
+    auto limited = edge.client().Get("/key/k", clientA);
+    ASSERT_TRUE(limited);
+    EXPECT_EQ(limited->status, 429);
+    EXPECT_EQ(limited->get_header_value("Retry-After"), "1");
+
+    auto other = edge.client().Get("/key/k", clientB);
+    ASSERT_TRUE(other);
+    EXPECT_NE(other->status, 429);
+    EXPECT_EQ(edge.stats()["requests"]["rateLimited"], 1);
+}
+
+TEST_F(EdgeServerTest, TrackedClientsStayBoundedAndEvictedClientGetsFreshBucket) {
+    FakeOrigin origin;
+    EdgeConfig cfg = config(origin.port());
+    cfg.rateLimitBurst = 1;
+    cfg.rateLimitPerSec = 0.0;
+    cfg.maxTrackedClients = 2;
+    RunningEdge edge(cfg);
+    auto get = [&](const std::string& client) {
+        auto res = edge.client().Get("/key/k", {{"X-Forwarded-For", client}});
+        return res ? res->status : -1;
+    };
+
+    EXPECT_NE(get("10.0.0.1"), 429);
+    EXPECT_EQ(get("10.0.0.1"), 429);  // burst of 1, no refill
+    EXPECT_NE(get("10.0.0.2"), 429);
+    EXPECT_NE(get("10.0.0.3"), 429);  // evicts the least recently seen client (10.0.0.1)
+    EXPECT_NE(get("10.0.0.1"), 429);  // re-tracked with a fresh bucket
+}
+
+TEST_F(EdgeServerTest, RejectsZeroTrackedClients) {
+    EdgeConfig cfg = config(1);
+    cfg.maxTrackedClients = 0;
+    EXPECT_THROW(EdgeServer server(cfg), std::invalid_argument);
 }
