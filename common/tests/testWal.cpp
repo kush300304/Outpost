@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,9 +33,11 @@ class TempWalFile
 public:
     TempWalFile()
     {
-        path_ = (fs::temp_directory_path() /
-                 ("outpost_wal_test_" + std::to_string(counter_++) + ".wal"))
+        path_ = (fs::temp_directory_path() / ("outpost_wal_test_" + std::to_string(::getpid()) +
+                                              "_" + std::to_string(counter_++) + ".wal"))
                     .string();
+        std::error_code ec;
+        fs::remove(path_, ec);  // a run killed mid-test can leave a file with this name behind
     }
     ~TempWalFile()
     {
