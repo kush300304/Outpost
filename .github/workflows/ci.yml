@@ -1,0 +1,65 @@
+# Build, unit tests, sanitizers, style and a compose integration test on every push and pull request.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: ["address,undefined", "thread"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Allow ThreadSanitizer's memory layout
+        if: matrix.sanitize == 'thread'
+        run: sudo sysctl vm.mmap_rnd_bits=28
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DOUTPOST_SANITIZE=${{ matrix.sanitize }}
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+      - name: Unit tests under ${{ matrix.sanitize }}
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure
+
+  style:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-format 18
+        run: sudo apt-get update && sudo apt-get install -y clang-format-18
+      - name: CLAUDE.md style rules
+        run: python3 scripts/checkStyle.py
+      - name: clang-format
+        run: scripts/format.sh --check
+
+  compose-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the cluster
+        run: docker compose up -d --build --wait
+      - name: Integration test
+        run: scripts/integrationTest.sh
+      - name: Service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+      - name: Stop the cluster
+        if: always()
+        run: docker compose down -v
