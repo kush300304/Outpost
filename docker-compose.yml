@@ -10,6 +10,12 @@ x-healthcheck: &healthcheck
   retries: 15
   start_period: 2s
 
+# Docker's embedded DNS forwards names it does not know (a stopped container) to the host's resolver,
+# which can take seconds to fail; bound each lookup to one 1 s attempt.
+x-dns: &dns
+  - "timeout:1"
+  - "attempts:1"
+
 x-edge: &edge
   build:
     context: .
@@ -17,6 +23,7 @@ x-edge: &edge
   depends_on:
     write-api:
       condition: service_healthy
+  dns_opt: *dns
   restart: unless-stopped
 
 services:
@@ -48,6 +55,7 @@ services:
     depends_on:
       storage:
         condition: service_healthy
+    dns_opt: *dns
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
@@ -108,6 +116,7 @@ services:
       EDGE_NODES: edge-1=edge-1:8081,edge-2=edge-2:8082,edge-3=edge-3:8083
     ports:
       - "8080:8080"
+    dns_opt: *dns
     depends_on:
       edge-1:
         condition: service_healthy
