@@ -133,3 +133,19 @@ $ python3 scripts/checkStyle.py && scripts/format.sh --check
 checkStyle: 44 files, 0 violations
 clang-format: 44 files, all formatted
 ```
+
+## 8. CI on GitHub Actions
+
+First run of `.github/workflows/ci.yml` after the Phase E push (run `44816257622`, commit `d9d7d0f`, ubuntu-24.04 runners):
+
+```
+$ gh run view 44816257622 --json conclusion,jobs
+success
+sanitizers (thread): success
+compose-integration: success
+style: success
+sanitizers (address,undefined): success
+build-and-test: success
+```
+
+The run printed a deprecation notice for `actions/checkout@v4` (Node.js 20); the workflow moves to `actions/checkout@v5`.
