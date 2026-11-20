@@ -1,27 +1,26 @@
-FROM gcc:12-bookworm AS builder
-
+# Builder stage: identical in every service Dockerfile, so BuildKit builds all four binaries once
+# and every image reuses the cached layer.
+FROM debian:bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake \
-    git \
-    make \
-    ca-certificates \
+        g++ cmake make git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-COPY . .
-
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-RUN cmake --build build --target storage_server -j$(nproc)
+WORKDIR /src
+COPY CMakeLists.txt ./
+COPY common ./common
+COPY edge ./edge
+COPY router ./router
+COPY storage ./storage
+COPY write-api ./write-api
+RUN cmake -S . -B /build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    && cmake --build /build -j"$(nproc)" \
+        --target storage_server write_api_server edge_server router_server
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-RUN mkdir -p /data
-COPY --from=builder /app/build/storage/storage_server /app/storage_server
-
-EXPOSE 8091
-ENTRYPOINT ["/app/storage_server"]
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 outpost \
+    && mkdir -p /data && chown outpost /data
+COPY --from=builder /build/storage/storage_server /usr/local/bin/storage_server
+USER outpost
+EXPOSE 9091
+ENTRYPOINT ["/usr/local/bin/storage_server"]

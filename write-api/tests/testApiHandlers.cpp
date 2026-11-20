@@ -55,7 +55,7 @@ private:
 class WriteApiFixture
 {
 public:
-    explicit WriteApiFixture(bool storageUp) : client_("127.0.0.1", 1)
+    explicit WriteApiFixture(bool storageUp, bool adminEnabled = false) : client_("127.0.0.1", 1)
     {
         if (storageUp)
         {
@@ -63,7 +63,9 @@ public:
             storage_.start();
             client_ = outpost::writeApi::StorageClient("127.0.0.1", storage_.port());
         }
-        outpost::writeApi::registerHandlers(api_.server, client_);
+        outpost::writeApi::HandlerOptions options;
+        options.adminEnabled = adminEnabled;
+        outpost::writeApi::registerHandlers(api_.server, client_, options);
         api_.start();
     }
     httplib::Client client() const
@@ -199,4 +201,53 @@ TEST(WriteApiWriteTest, StorageFailureOnWriteIs502)
 {
     WriteApiFixture api(false);
     EXPECT_EQ(api.put("k", validWrite("v")), 502);
+}
+
+// ── Simulated outage (admin) ────────────────────────────────────────────
+
+TEST(WriteApiAdminTest, AdminEndpointIsAbsentUnlessEnabled)
+{
+    WriteApiFixture api(true);
+    auto res = api.client().Post("/admin/outage", R"({"enabled":true})", "application/json");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 404);
+}
+
+TEST(WriteApiAdminTest, SimulatedOutageFailsHealthAndKeysUntilTurnedOff)
+{
+    WriteApiFixture api(true, true);
+    api.store.put("k", "v", 1, "edge-1");
+    auto on = api.client().Post("/admin/outage", R"({"enabled":true})", "application/json");
+    ASSERT_TRUE(on);
+    EXPECT_EQ(on->status, 200);
+    EXPECT_EQ(json::parse(on->body)["simulatedOutage"], true);
+
+    auto health = api.client().Get("/health");
+    auto read = api.client().Get("/key/k");
+    ASSERT_TRUE(health && read);
+    EXPECT_EQ(health->status, 503);
+    EXPECT_EQ(json::parse(health->body)["simulated"], true);
+    EXPECT_EQ(read->status, 503);
+    EXPECT_EQ(api.put("k2", validWrite("v")), 503);
+    EXPECT_FALSE(api.store.exists("k2"));
+
+    auto state = api.client().Get("/admin/outage");
+    ASSERT_TRUE(state);
+    EXPECT_EQ(json::parse(state->body)["simulatedOutage"], true);
+    EXPECT_EQ(json::parse(state->body)["storageHealthy"], true);
+
+    auto off = api.client().Post("/admin/outage", R"({"enabled":false})", "application/json");
+    ASSERT_TRUE(off);
+    auto healthAfter = api.client().Get("/health");
+    ASSERT_TRUE(healthAfter);
+    EXPECT_EQ(healthAfter->status, 200);
+    EXPECT_EQ(api.put("k2", validWrite("v")), 200);
+}
+
+TEST(WriteApiAdminTest, MalformedOutageRequestIsRejected)
+{
+    WriteApiFixture api(true, true);
+    auto res = api.client().Post("/admin/outage", R"({"enabled":"yes"})", "application/json");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 400);
 }

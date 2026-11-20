@@ -1,0 +1,10 @@
+# Build context for the service images: only CMake files and sources are needed.
+.git
+.cache
+.claude
+build*/
+benchmarks/
+dashboard/
+docs/
+scripts/
+**/*.wal

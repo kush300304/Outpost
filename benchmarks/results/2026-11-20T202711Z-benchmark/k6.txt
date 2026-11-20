@@ -1,0 +1,43 @@
+ Image grafana/k6:0.49.0 Pulling 
+ 4f4fb700ef54 Pulling fs layer 0B
+ cd4f844ad014 Pulling fs layer 0B
+ 604978bea0c7 Pulling fs layer 0B
+ 619be1103602 Pulling fs layer 0B
+ 4f4fb700ef54 Download complete 0B
+ cd4f844ad014 Downloading 2.097MB
+ cd4f844ad014 Downloading 3.146MB
+ 604978bea0c7 Download complete 0B
+ cd4f844ad014 Downloading 5.243MB
+ cd4f844ad014 Downloading 6.291MB
+ 619be1103602 Downloading 2.097MB
+ cd4f844ad014 Downloading 7.34MB
+ 619be1103602 Download complete 0B
+ cd4f844ad014 Downloading 8.389MB
+ 619be1103602 Extracting 1B
+ cd4f844ad014 Downloading 9.437MB
+ 619be1103602 Extracting 1B
+ cd4f844ad014 Downloading 10.49MB
+ 619be1103602 Pull complete 0B
+ 1c172c3535ad Download complete 0B
+ cd4f844ad014 Downloading 10.49MB
+ 604978bea0c7 Pull complete 0B
+ cd4f844ad014 Downloading 11.53MB
+ cd4f844ad014 Downloading 13.63MB
+ cd4f844ad014 Downloading 14.68MB
+ cd4f844ad014 Downloading 15.73MB
+ cd4f844ad014 Downloading 16.78MB
+ cd4f844ad014 Downloading 18.87MB
+ cd4f844ad014 Downloading 19.92MB
+ cd4f844ad014 Downloading 20.97MB
+ cd4f844ad014 Downloading 22.02MB
+ cd4f844ad014 Downloading 23.07MB
+ cd4f844ad014 Downloading 24.12MB
+ cd4f844ad014 Download complete 0B
+ cd4f844ad014 Extracting 1B
+ cd4f844ad014 Extracting 1B
+ cd4f844ad014 Extracting 1B
+ 4f4fb700ef54 Pull complete 0B
+ cd4f844ad014 Pull complete 0B
+ Image grafana/k6:0.49.0 Pulled 
+ Container outpost-k6-run-e3b1b5ae904e Creating 
+ Container outpost-k6-run-e3b1b5ae904e Created 

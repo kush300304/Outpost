@@ -16,6 +16,14 @@ namespace outpost
 namespace writeApi
 {
 
+/// @brief Options for registerHandlers().
+struct HandlerOptions
+{
+    /// Registers GET/POST /admin/outage, which turns a simulated outage on and off. While it is on,
+    /// /health and every /key request answer 503, exactly as if storage were unreachable.
+    bool adminEnabled = false;
+};
+
 /// @brief Register all HTTP routes on the given server.
 ///
 /// Routes:
@@ -23,10 +31,13 @@ namespace writeApi
 ///   GET    /key/:id      → proxy GET to storage: 200, 404, or 502 when storage fails
 ///   PUT    /key/:id      → validate {"value","version","writerId"}, then proxy to storage
 ///   GET    /debug/stats  → service diagnostics
+///   GET    /admin/outage → {"simulatedOutage","storageHealthy"} (only with options.adminEnabled)
+///   POST   /admin/outage → body {"enabled":bool} (only with options.adminEnabled)
 ///
 /// @param server  The httplib server to register routes on.
 /// @param client  The storage client to use for proxying requests.
-void registerHandlers(httplib::Server& server, StorageClient& client);
+void registerHandlers(httplib::Server& server, StorageClient& client,
+                      const HandlerOptions& options = HandlerOptions());
 
 }  // namespace writeApi
 }  // namespace outpost

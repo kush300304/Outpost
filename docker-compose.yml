@@ -1,131 +1,134 @@
-version: '3.8'
+# Outpost cluster: router → 3 edges → write-api → storage.
+# Only the router (8080) is published to the host; every other service is reachable only inside
+# the compose network. Start with: docker compose up -d --build
+
+name: outpost
+
+x-healthcheck: &healthcheck
+  interval: 2s
+  timeout: 2s
+  retries: 15
+  start_period: 2s
+
+x-edge: &edge
+  build:
+    context: .
+    dockerfile: edge/Dockerfile
+  depends_on:
+    write-api:
+      condition: service_healthy
+  restart: unless-stopped
 
 services:
   storage:
     build:
       context: .
       dockerfile: storage/Dockerfile
-    container_name: outpost-storage
     environment:
-      - PORT=8091
-      - WAL_PATH=/data/storage.wal
-    ports:
-      - "8091:8091"
+      PORT: "9091"
+      WAL_PATH: /data/storage.wal
+      WAL_FSYNC: "${WAL_FSYNC:-1}"
     volumes:
       - storage-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8091/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9091/health"]
     restart: unless-stopped
 
   write-api:
     build:
       context: .
       dockerfile: write-api/Dockerfile
-    container_name: outpost-write-api
     environment:
-      - PORT=8090
-      - STORAGE_HOST=storage
-      - STORAGE_PORT=8091
-    ports:
-      - "8090:8090"
+      PORT: "9090"
+      STORAGE_HOST: storage
+      STORAGE_PORT: "9091"
     depends_on:
       storage:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8090/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
     restart: unless-stopped
 
   edge-1:
-    build:
-      context: .
-      dockerfile: edge/Dockerfile
-    container_name: outpost-edge-1
-    environment:
-      - PORT=8080
-      - NODE_ID=edge-1
-      - WRITE_API_HOST=write-api
-      - WRITE_API_PORT=8090
-      - CACHE_CAPACITY=1024
-      - WAL_PATH=/data/edge-1_write_queue.wal
-    ports:
-      - "8080:8080"
+    <<: *edge
+    environment: &edgeEnvironment
+      PORT: "8081"
+      NODE_ID: edge-1
+      WRITE_API_HOST: write-api
+      WRITE_API_PORT: "9090"
+      WAL_PATH: /data/queue.wal
+      WAL_FSYNC: "${WAL_FSYNC:-1}"
+      CACHE_CAPACITY: "${CACHE_CAPACITY:-1024}"
+      CACHE_TTL_MS: "${CACHE_TTL_MS:-60000}"
+      RATE_LIMIT_PER_SEC: "${RATE_LIMIT_PER_SEC:-100}"
+      RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-200}"
+      BREAKER_FAILURE_THRESHOLD: "3"
+      BREAKER_RESET_TIMEOUT_MS: "5000"
+      HEALTH_CHECK_INTERVAL_MS: "1000"
     volumes:
-      - edge1-data:/data
-    depends_on:
-      write-api:
-        condition: service_healthy
+      - edge-1-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
-    restart: unless-stopped
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/health"]
 
   edge-2:
-    build:
-      context: .
-      dockerfile: edge/Dockerfile
-    container_name: outpost-edge-2
+    <<: *edge
     environment:
-      - PORT=8081
-      - NODE_ID=edge-2
-      - WRITE_API_HOST=write-api
-      - WRITE_API_PORT=8090
-      - CACHE_CAPACITY=1024
-      - WAL_PATH=/data/edge-2_write_queue.wal
-    ports:
-      - "8081:8081"
+      <<: *edgeEnvironment
+      PORT: "8082"
+      NODE_ID: edge-2
     volumes:
-      - edge2-data:/data
-    depends_on:
-      write-api:
-        condition: service_healthy
+      - edge-2-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8081/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
-    restart: unless-stopped
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
 
   edge-3:
+    <<: *edge
+    environment:
+      <<: *edgeEnvironment
+      PORT: "8083"
+      NODE_ID: edge-3
+    volumes:
+      - edge-3-data:/data
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:8083/health"]
+
+  router:
     build:
       context: .
-      dockerfile: edge/Dockerfile
-    container_name: outpost-edge-3
+      dockerfile: router/Dockerfile
     environment:
-      - PORT=8082
-      - NODE_ID=edge-3
-      - WRITE_API_HOST=write-api
-      - WRITE_API_PORT=8090
-      - CACHE_CAPACITY=1024
-      - WAL_PATH=/data/edge-3_write_queue.wal
+      PORT: "8080"
+      EDGE_NODES: edge-1=edge-1:8081,edge-2=edge-2:8082,edge-3=edge-3:8083
     ports:
-      - "8082:8082"
-    volumes:
-      - edge3-data:/data
+      - "8080:8080"
     depends_on:
-      write-api:
+      edge-1:
+        condition: service_healthy
+      edge-2:
+        condition: service_healthy
+      edge-3:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8082/health || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-      start_period: 2s
+      <<: *healthcheck
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
     restart: unless-stopped
+
+  # Load generator for scripts/runBenchmark.sh; started only with --profile bench.
+  k6:
+    image: grafana/k6:0.49.0
+    profiles: ["bench"]
+    volumes:
+      - ./benchmarks:/benchmarks
+    environment:
+      BASE_URL: http://router:8080
 
 volumes:
   storage-data:
-  edge1-data:
-  edge2-data:
-  edge3-data:
+  edge-1-data:
+  edge-2-data:
+  edge-3-data:

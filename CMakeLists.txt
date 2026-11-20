@@ -8,12 +8,29 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Enable testing by default
 option(BUILD_TESTING "Build the test suite" ON)
 
+# Sanitizer builds: -DOUTPOST_SANITIZE=address,undefined or -DOUTPOST_SANITIZE=thread.
+# Applied to every target (dependencies included) so instrumented and plain code never mix.
+set(OUTPOST_SANITIZE "" CACHE STRING "Sanitizers to enable: address,undefined | thread | empty")
+if(OUTPOST_SANITIZE)
+    add_compile_options(-fsanitize=${OUTPOST_SANITIZE} -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=${OUTPOST_SANITIZE})
+    if(OUTPOST_SANITIZE MATCHES "undefined")
+        add_compile_options(-fno-sanitize-recover=undefined)
+    endif()
+endif()
+
 include(FetchContent)
 
 # cpp-httplib listens with a backlog of 5 by default; under concurrent connects the kernel drops
 # SYNs beyond it and clients wait for a 1 s retransmit. Every target that includes httplib.h must
 # see the same value, so it is set once for the whole build.
 add_compile_definitions(CPPHTTPLIB_LISTEN_BACKLOG=1024)
+# cpp-httplib leaves Nagle's algorithm on; on a keep-alive connection a response written in two
+# parts then waits for the peer's delayed ACK (~40 ms per request). Disable it everywhere.
+add_compile_definitions(CPPHTTPLIB_TCP_NODELAY=true)
+# A keep-alive connection holds one server worker until it closes or idles out (5 s), so the
+# default pool (CPU count - 1) starved new clients once that many connections were open.
+add_compile_definitions(CPPHTTPLIB_THREAD_POOL_COUNT=64)
 
 # cpp-httplib (HTTP client and server)
 find_package(httplib QUIET)

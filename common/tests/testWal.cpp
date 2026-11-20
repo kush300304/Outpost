@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -32,9 +33,11 @@ class TempWalFile
 public:
     TempWalFile()
     {
-        path_ = (fs::temp_directory_path() /
-                 ("outpost_wal_test_" + std::to_string(counter_++) + ".wal"))
+        path_ = (fs::temp_directory_path() / ("outpost_wal_test_" + std::to_string(::getpid()) +
+                                              "_" + std::to_string(counter_++) + ".wal"))
                     .string();
+        std::error_code ec;
+        fs::remove(path_, ec);  // a run killed mid-test can leave a file with this name behind
     }
     ~TempWalFile()
     {
@@ -508,4 +511,16 @@ TEST(WalTest, RecoveredEntriesMatchTheLogAndAreTakenOnce)
     EXPECT_EQ(recovered[1].key, replayed[1].key);
     EXPECT_EQ(recovered[1].sequenceNumber, replayed[1].sequenceNumber);
     EXPECT_TRUE(wal.takeRecoveredEntries().empty());
+}
+
+TEST(WalTest, DiscardThroughEverythingLeavesAnEmptyUsableLog)
+{
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path());
+    wal.appendPut("a", "1");
+    uint64_t last = wal.appendPut("b", "2");
+    EXPECT_EQ(wal.discardThrough(last), 0u);
+    EXPECT_EQ(fs::file_size(tmp.path()), 0u);
+    EXPECT_EQ(wal.appendPut("c", "3"), 3u);
+    EXPECT_EQ(wal.replay().size(), 1u);
 }

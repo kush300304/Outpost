@@ -717,3 +717,48 @@ TEST_F(EdgeServerTest, StatsMatchTheDocumentedSchema)
     EXPECT_EQ(eventTypes, (std::set<std::string>{"breaker", "reconcile", "rateLimit"}));
     EXPECT_FALSE(stats["circuitBreaker"]["recentTransitions"].empty());
 }
+
+TEST_F(EdgeServerTest, KeepAliveRequestsAreNotDelayedByNagle)
+{
+    FakeOrigin origin;
+    RunningEdge edge(config(origin.port()));
+    auto put = edge.client().Put("/key/k", "v", "text/plain");
+    ASSERT_TRUE(put);
+    httplib::Client keepAlive = edge.client();
+    keepAlive.set_keep_alive(true);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10; ++i)
+    {
+        auto res = keepAlive.Get("/key/k");
+        ASSERT_TRUE(res);
+        ASSERT_EQ(res->status, 200);
+    }
+    // Ten requests on one connection take a few milliseconds; with Nagle's algorithm interacting
+    // with delayed ACKs each one after the first stalls for ~40 ms.
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+    EXPECT_LT(elapsedMs, 150) << "10 keep-alive requests took " << elapsedMs << " ms";
+}
+
+TEST_F(EdgeServerTest, IdleKeepAliveConnectionsDoNotStarveNewClients)
+{
+    FakeOrigin origin;
+    RunningEdge edge(config(origin.port()));
+    ASSERT_TRUE(edge.client().Put("/key/k", "v", "text/plain"));
+    // Each idle keep-alive connection holds a server worker until its keep-alive timeout.
+    std::vector<std::unique_ptr<httplib::Client>> idle;
+    for (int i = 0; i < 20; ++i)
+    {
+        idle.push_back(std::make_unique<httplib::Client>(edge.client()));
+        idle.back()->set_keep_alive(true);
+        ASSERT_TRUE(idle.back()->Get("/key/k"));
+    }
+    auto start = std::chrono::steady_clock::now();
+    auto res = edge.client().Get("/key/k");
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+    ASSERT_TRUE(res);
+    EXPECT_LT(elapsedMs, 1000) << "a new client waited " << elapsedMs << " ms for a worker";
+}
