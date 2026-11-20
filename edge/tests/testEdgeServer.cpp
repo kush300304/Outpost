@@ -511,3 +511,37 @@ TEST_F(EdgeServerTest, InvalidWriteIsRejectedUpFrontEvenWhileDegraded) {
     EXPECT_EQ(atLimits->status, 202);
     EXPECT_EQ(edge.pending(), 1u);
 }
+
+TEST_F(EdgeServerTest, ExpiredEntryIsRefetchedWhileClosed) {
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 100ms;
+    RunningEdge edge(cfg);
+    auto first = edge.client().Get("/key/k");
+    auto second = edge.client().Get("/key/k");
+    std::this_thread::sleep_for(150ms);
+    auto third = edge.client().Get("/key/k");
+    ASSERT_TRUE(first && second && third);
+    EXPECT_EQ(first->get_header_value("X-Cache"), "MISS");
+    EXPECT_EQ(second->get_header_value("X-Cache"), "HIT");
+    EXPECT_EQ(third->get_header_value("X-Cache"), "MISS");
+    EXPECT_EQ(origin.keyGets.load(), 2);
+}
+
+TEST_F(EdgeServerTest, ExpiredEntryIsServedStaleWhenOriginFails) {
+    FakeOrigin origin;
+    std::atomic<int> status{200};
+    origin.getStatus = [&](const std::string&) { return status.load(); };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 100ms;
+    RunningEdge edge(cfg);
+    ASSERT_TRUE(edge.client().Get("/key/k"));
+    std::this_thread::sleep_for(150ms);
+    status = 502;
+    auto res = edge.client().Get("/key/k");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_EQ(res->get_header_value("X-Cache"), "STALE");
+    EXPECT_EQ(json::parse(res->body)["value"], "origin-k");
+}

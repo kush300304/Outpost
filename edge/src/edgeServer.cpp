@@ -41,7 +41,7 @@ const char* const kRateLimitedBody =
 EdgeServer::EdgeServer(const EdgeConfig& config)
     : config_(config),
       originClient_(config.writeApiHost, config.writeApiPort, config.originTimeout),
-      cache_(config.cacheCapacity),
+      cache_(config.cacheCapacity, config.cacheTtl),
       writeQueue_(config.walPath.empty() ? "/data/" + config.nodeId + "_write_queue.wal"
                                          : config.walPath,
                   config.walFsync),
@@ -74,17 +74,17 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         std::string cacheHeader = "MISS";
         bool admitted = bucketFor(clientIdOf(req))->tryConsume();
         bool closed = breaker_.state() == common::BreakerState::CLOSED;
-        auto cached = admitted ? cache_.get(key) : std::nullopt;
+        auto cached = admitted ? cache_.lookup(key) : std::nullopt;
         if (!admitted) {
             rateLimited_.fetch_add(1, std::memory_order_relaxed);
             res.status = 429;
             res.set_header("Retry-After", "1");
             cacheHeader.clear();
             body = json::parse(kRateLimitedBody);
-        } else if (cached.has_value()) {
+        } else if (cached && (cached->fresh || !closed)) {
             cacheHeader = closed ? "HIT" : "STALE";
             staleServes_.fetch_add(closed ? 0 : 1, std::memory_order_relaxed);
-            body = {{"key", key}, {"value", cached.value()}};
+            body = {{"key", key}, {"value", cached->value}};
         } else if (!closed) {
             res.status = 503;
             body = {{"error", "origin_unavailable"},
@@ -97,12 +97,19 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                          parsed.contains("value") && parsed["value"].is_string();
             if (found) {
                 breaker_.recordSuccess();
-                cache_.put(key, parsed["value"].get<std::string>());
+                cache_.put(key, parsed["value"].get<std::string>(),
+                           parsed.value("version", uint64_t{0}));
                 body = {{"key", key}, {"value", parsed["value"]}};
             } else if (origin.httpStatus == 404) {
                 breaker_.recordSuccess();
+                cache_.remove(key);
                 res.status = 404;
                 body = {{"error", "not_found"}, {"key", key}};
+            } else if (cached) {
+                breaker_.recordFailure();
+                cacheHeader = "STALE";
+                staleServes_.fetch_add(1, std::memory_order_relaxed);
+                body = {{"key", key}, {"value", cached->value}};
             } else {
                 breaker_.recordFailure();
                 res.status = 503;
@@ -191,7 +198,7 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                               .dump();
             }
             if (!rejected) {
-                cache_.put(key, value);
+                cache_.put(key, value, version);
                 res.set_header("X-Write-Mode", forwarded ? "DIRECT" : "QUEUED");
             }
         }
@@ -207,6 +214,7 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             {"cache",
              {{"size", cache_.size()},
               {"capacity", cache_.capacity()},
+              {"ttlMs", cache_.ttl().count()},
               {"hits", cacheStats.hits},
               {"misses", cacheStats.misses},
               {"evictions", cacheStats.evictions},

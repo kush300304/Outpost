@@ -14,9 +14,10 @@
 /// CLOSED, never while OPEN, and exactly once (the probe) in HALF_OPEN. Request handlers never
 /// call isAllowed(); they read the state and record origin successes and failures.
 ///
-/// Reads: a cached key is served as HIT while CLOSED and as STALE otherwise. An uncached key is
-/// fetched from write-api while CLOSED (MISS); with the breaker not CLOSED, or the fetch failing,
-/// the edge answers 503.
+/// Reads: a fresh cached key is served as HIT while CLOSED. A missing or expired key is fetched
+/// from write-api while CLOSED (MISS) and cached with its version. Whenever the breaker is not
+/// CLOSED, or that fetch fails, any cached value (fresh or expired) is served as STALE; with
+/// nothing cached the edge answers 503.
 ///
 /// Rate limiting: every /key request consumes a token from its client's bucket (client = first
 /// X-Forwarded-For hop, else the peer address); an empty bucket answers 429 with Retry-After: 1.
@@ -56,6 +57,7 @@ struct EdgeConfig {
     std::string writeApiHost = "write-api";                 ///< Write-API hostname.
     int writeApiPort = 9090;                                ///< Write-API port.
     std::size_t cacheCapacity = 1024;                       ///< LRU cache max entries.
+    std::chrono::milliseconds cacheTtl{60000};              ///< Entry freshness; 0 = forever.
     double rateLimitPerSec = 100.0;                         ///< Token refill per client per s.
     std::size_t rateLimitBurst = 200;                       ///< Token bucket capacity per client.
     std::size_t maxTrackedClients = 10000;                  ///< Buckets kept before idle eviction.

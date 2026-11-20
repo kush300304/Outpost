@@ -7,6 +7,7 @@
 ///   WRITE_API_HOST  write-api hostname (default "write-api")
 ///   WRITE_API_PORT  write-api port (default 9090)
 ///   CACHE_CAPACITY  LRU cache max entries (default 1024)
+///   CACHE_TTL_MS    cache entry freshness; 0 never expires (default 60000)
 ///   WAL_PATH        degraded-mode write queue (default /data/<nodeId>_write_queue.wal)
 ///   WAL_FSYNC       "0" disables fsync per queued write (default "1")
 ///   BREAKER_FAILURE_THRESHOLD  consecutive failures that open the breaker (default 3)
@@ -40,6 +41,7 @@ int main() {
     config.writeApiHost = env("WRITE_API_HOST", "write-api");
     config.writeApiPort = std::stoi(env("WRITE_API_PORT", "9090"));
     config.cacheCapacity = std::stoul(env("CACHE_CAPACITY", "1024"));
+    config.cacheTtl = std::chrono::milliseconds(std::stol(env("CACHE_TTL_MS", "60000")));
     config.walPath = env("WAL_PATH", "");
     config.walFsync = env("WAL_FSYNC", "1") != "0";
     config.breakerFailureThreshold = std::stoi(env("BREAKER_FAILURE_THRESHOLD", "3"));
