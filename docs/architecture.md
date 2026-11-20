@@ -4,8 +4,8 @@ Outpost is a read-heavy key-value request path with one authoritative write path
 **router**. The router sends each key to one of three **edge** nodes using consistent hashing. Each edge caches
 values and protects the origin: **write-api** in front of **storage**, the only service that owns data.
 
-> Status: the compose packaging (published ports) and the dashboard are built in Phases E and F of
-> `docs/roadmap.md`; until then `scripts/localCluster.sh` runs the same services on the same ports.
+`docker compose up -d --build` runs exactly this layout; `scripts/localCluster.sh` runs the same services
+without Docker (no dashboard).
 
 ```mermaid
 flowchart LR
@@ -139,7 +139,7 @@ NTP. Deletes are not part of v1, because they would need versioned tombstones.
 | Port | Service | Published by compose |
 |---|---|---|
 | 8080 | router | yes (client entry point) |
-| 8090 | dashboard (nginx) | yes |
+| 8090 | dashboard (nginx: page + proxy to `/router`, `/edge1..3`, `/origin-admin`) | yes |
 | 8081–8083 | edge-1..3 | no |
 | 9090 | write-api | no |
 | 9091 | storage | no |

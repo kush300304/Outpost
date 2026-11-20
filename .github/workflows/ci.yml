@@ -9,7 +9,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
       - name: Build
@@ -24,7 +24,7 @@ jobs:
       matrix:
         sanitize: ["address,undefined", "thread"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Allow ThreadSanitizer's memory layout
         if: matrix.sanitize == 'thread'
         run: sudo sysctl vm.mmap_rnd_bits=28
@@ -41,7 +41,7 @@ jobs:
   style:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install clang-format 18
         run: sudo apt-get update && sudo apt-get install -y clang-format-18
       - name: CLAUDE.md style rules
@@ -52,7 +52,7 @@ jobs:
   compose-integration:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build and start the cluster
         run: docker compose up -d --build --wait
       - name: Integration test
