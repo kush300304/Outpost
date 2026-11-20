@@ -33,5 +33,6 @@ if(BUILD_TESTING)
         storage_lib
         GTest::gtest_main
     )
+    target_compile_definitions(edge_tests PRIVATE OUTPOST_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
     add_test(NAME edge_tests COMMAND edge_tests)
 endif()

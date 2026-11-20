@@ -7,15 +7,19 @@
 /// breaker wraps calls through this client — when the breaker opens, the
 /// edge serves stale cache instead of calling through here.
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
 
-namespace outpost {
-namespace edge {
+namespace outpost
+{
+namespace edge
+{
 
 /// @brief Result of an origin (write-api) operation.
-struct OriginResponse {
+struct OriginResponse
+{
     int httpStatus = 0;
     std::string body;
     bool success = false;
@@ -23,7 +27,8 @@ struct OriginResponse {
 };
 
 /// @brief HTTP client for upstream communication from edge to write-api.
-class OriginClient {
+class OriginClient
+{
 public:
     /// @param host    Write-API hostname (e.g., "write-api" in the compose network).
     /// @param port    Write-API port.
@@ -49,17 +54,23 @@ public:
     bool healthCheck();
 
     /// @brief Return the total number of requests sent to the origin.
-    uint64_t totalRequests() const { return totalRequests_; }
+    uint64_t totalRequests() const
+    {
+        return totalRequests_;
+    }
 
     /// @brief Return the total number of failed requests.
-    uint64_t failedRequests() const { return failedRequests_; }
+    uint64_t failedRequests() const
+    {
+        return failedRequests_;
+    }
 
 private:
     std::string host_;
     int port_;
     std::chrono::milliseconds timeout_;
-    uint64_t totalRequests_ = 0;
-    uint64_t failedRequests_ = 0;
+    std::atomic<uint64_t> totalRequests_{0};  ///< Updated from concurrent request threads.
+    std::atomic<uint64_t> failedRequests_{0};
 };
 
 }  // namespace edge

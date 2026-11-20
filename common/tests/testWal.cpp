@@ -5,8 +5,7 @@
 /// CRC corruption detection, truncation, empty-file replay, large entries,
 /// and concurrent appends.
 
-#include "common/wal.h"
-
+#include <gtest/gtest.h>
 #include <sys/resource.h>
 
 #include <algorithm>
@@ -19,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-#include <gtest/gtest.h>
+#include "common/wal.h"
 
 using outpost::common::WalEntry;
 using outpost::common::WalOperation;
@@ -28,18 +27,24 @@ using outpost::common::WriteAheadLog;
 namespace fs = std::filesystem;
 
 /// @brief RAII helper that creates a unique temp file path and removes it on destruction.
-class TempWalFile {
+class TempWalFile
+{
 public:
-    TempWalFile() {
-        path_ = (fs::temp_directory_path() / ("outpost_wal_test_" +
-                                               std::to_string(counter_++) + ".wal"))
+    TempWalFile()
+    {
+        path_ = (fs::temp_directory_path() /
+                 ("outpost_wal_test_" + std::to_string(counter_++) + ".wal"))
                     .string();
     }
-    ~TempWalFile() {
+    ~TempWalFile()
+    {
         std::error_code ec;
         fs::remove(path_, ec);
     }
-    const std::string& path() const { return path_; }
+    const std::string& path() const
+    {
+        return path_;
+    }
 
 private:
     std::string path_;
@@ -48,7 +53,8 @@ private:
 
 // ── Basic roundtrip ─────────────────────────────────────────────────────
 
-TEST(WalTest, AppendPutThenReplayReturnsSameEntry) {
+TEST(WalTest, AppendPutThenReplayReturnsSameEntry)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -64,7 +70,8 @@ TEST(WalTest, AppendPutThenReplayReturnsSameEntry) {
     EXPECT_EQ(entries[0].sequenceNumber, 1u);
 }
 
-TEST(WalTest, AppendDeleteThenReplay) {
+TEST(WalTest, AppendDeleteThenReplay)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -81,18 +88,21 @@ TEST(WalTest, AppendDeleteThenReplay) {
     EXPECT_TRUE(entries[1].value.empty());
 }
 
-TEST(WalTest, MultipleEntriesPreserveOrder) {
+TEST(WalTest, MultipleEntriesPreserveOrder)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
-        for (int i = 0; i < 100; ++i) {
+        for (int i = 0; i < 100; ++i)
+        {
             wal.appendPut("k" + std::to_string(i), "v" + std::to_string(i));
         }
     }
     WriteAheadLog wal2(tmp.path());
     auto entries = wal2.replay();
     ASSERT_EQ(entries.size(), 100u);
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 100; ++i)
+    {
         EXPECT_EQ(entries[i].key, "k" + std::to_string(i));
         EXPECT_EQ(entries[i].value, "v" + std::to_string(i));
         EXPECT_EQ(entries[i].sequenceNumber, static_cast<uint64_t>(i + 1));
@@ -101,7 +111,8 @@ TEST(WalTest, MultipleEntriesPreserveOrder) {
 
 // ── Sequence numbering ──────────────────────────────────────────────────
 
-TEST(WalTest, SequenceNumbersAreMonotonicallyIncreasing) {
+TEST(WalTest, SequenceNumbersAreMonotonicallyIncreasing)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path());
 
@@ -116,7 +127,8 @@ TEST(WalTest, SequenceNumbersAreMonotonicallyIncreasing) {
     EXPECT_EQ(wal.entriesAppended(), 3u);
 }
 
-TEST(WalTest, SequenceContinuesAfterReopen) {
+TEST(WalTest, SequenceContinuesAfterReopen)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -131,7 +143,8 @@ TEST(WalTest, SequenceContinuesAfterReopen) {
 
 // ── Empty and missing files ─────────────────────────────────────────────
 
-TEST(WalTest, ReplayOnNonexistentFileReturnsEmpty) {
+TEST(WalTest, ReplayOnNonexistentFileReturnsEmpty)
+{
     TempWalFile tmp;
     // Don't write anything — file doesn't exist
     WriteAheadLog wal(tmp.path());
@@ -139,10 +152,13 @@ TEST(WalTest, ReplayOnNonexistentFileReturnsEmpty) {
     EXPECT_TRUE(entries.empty());
 }
 
-TEST(WalTest, ReplayOnEmptyFileReturnsEmpty) {
+TEST(WalTest, ReplayOnEmptyFileReturnsEmpty)
+{
     TempWalFile tmp;
     // Create empty file
-    { std::ofstream(tmp.path(), std::ios::binary); }
+    {
+        std::ofstream(tmp.path(), std::ios::binary);
+    }
     WriteAheadLog wal(tmp.path());
     auto entries = wal.replay();
     EXPECT_TRUE(entries.empty());
@@ -150,7 +166,8 @@ TEST(WalTest, ReplayOnEmptyFileReturnsEmpty) {
 
 // ── CRC corruption detection ────────────────────────────────────────────
 
-TEST(WalTest, CorruptedEntryIsSkippedDuringReplay) {
+TEST(WalTest, CorruptedEntryIsSkippedDuringReplay)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -195,7 +212,8 @@ TEST(WalTest, CorruptedEntryIsSkippedDuringReplay) {
 
 // ── Truncation ──────────────────────────────────────────────────────────
 
-TEST(WalTest, TruncateRemovesAllEntries) {
+TEST(WalTest, TruncateRemovesAllEntries)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path());
     wal.appendPut("a", "1");
@@ -210,7 +228,8 @@ TEST(WalTest, TruncateRemovesAllEntries) {
     EXPECT_EQ(wal.currentSequence(), 2u);
 }
 
-TEST(WalTest, CanAppendAfterTruncate) {
+TEST(WalTest, CanAppendAfterTruncate)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path());
     wal.appendPut("old", "data");
@@ -226,7 +245,8 @@ TEST(WalTest, CanAppendAfterTruncate) {
 
 // ── Edge cases ──────────────────────────────────────────────────────────
 
-TEST(WalTest, EmptyKeyAndValue) {
+TEST(WalTest, EmptyKeyAndValue)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -239,7 +259,8 @@ TEST(WalTest, EmptyKeyAndValue) {
     EXPECT_EQ(entries[0].value, "");
 }
 
-TEST(WalTest, LargeEntry) {
+TEST(WalTest, LargeEntry)
+{
     TempWalFile tmp;
     std::string bigKey(1024, 'K');
     std::string bigVal(64 * 1024, 'V');  // 64 KB value
@@ -256,7 +277,8 @@ TEST(WalTest, LargeEntry) {
 
 // ── ReplayForEach callback ──────────────────────────────────────────────
 
-TEST(WalTest, VersionAndWriterIdRoundTrip) {
+TEST(WalTest, VersionAndWriterIdRoundTrip)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -277,7 +299,8 @@ TEST(WalTest, VersionAndWriterIdRoundTrip) {
     EXPECT_EQ(entries[0].value, "v");
 }
 
-TEST(WalTest, DiscardThroughKeepsEntriesAppendedAfterSnapshot) {
+TEST(WalTest, DiscardThroughKeepsEntriesAppendedAfterSnapshot)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path());
     wal.appendPut("a", "1");
@@ -298,7 +321,8 @@ TEST(WalTest, DiscardThroughKeepsEntriesAppendedAfterSnapshot) {
     EXPECT_EQ(reopened.replay().size(), 2u);
 }
 
-TEST(WalTest, RecoveryReportCountsTruncatedTail) {
+TEST(WalTest, RecoveryReportCountsTruncatedTail)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -316,7 +340,8 @@ TEST(WalTest, RecoveryReportCountsTruncatedTail) {
     EXPECT_LT(fs::file_size(tmp.path()), fullSize - 5);
 }
 
-TEST(WalTest, FailedAppendIsRolledBackAndLogStaysUsable) {
+TEST(WalTest, FailedAppendIsRolledBackAndLogStaysUsable)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path(), false);
     wal.appendPut("a", "1");
@@ -341,18 +366,20 @@ TEST(WalTest, FailedAppendIsRolledBackAndLogStaysUsable) {
 
 // ── CRC32 utility ───────────────────────────────────────────────────────
 
-TEST(WalTest, Crc32ProducesConsistentResults) {
+TEST(WalTest, Crc32ProducesConsistentResults)
+{
     const std::string data = "hello world";
-    auto crc1 = WriteAheadLog::computeCrc32(reinterpret_cast<const uint8_t*>(data.data()),
-                                            data.size());
-    auto crc2 = WriteAheadLog::computeCrc32(reinterpret_cast<const uint8_t*>(data.data()),
-                                            data.size());
+    auto crc1 =
+        WriteAheadLog::computeCrc32(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+    auto crc2 =
+        WriteAheadLog::computeCrc32(reinterpret_cast<const uint8_t*>(data.data()), data.size());
     EXPECT_EQ(crc1, crc2);
     // Known CRC32 for "hello world" (zlib compatible)
     EXPECT_EQ(crc1, 0x0D4A1185u);
 }
 
-TEST(WalTest, Crc32DiffersForDifferentData) {
+TEST(WalTest, Crc32DiffersForDifferentData)
+{
     const std::string d1 = "abc";
     const std::string d2 = "abd";
     auto c1 = WriteAheadLog::computeCrc32(reinterpret_cast<const uint8_t*>(d1.data()), d1.size());
@@ -362,7 +389,8 @@ TEST(WalTest, Crc32DiffersForDifferentData) {
 
 // ── Concurrent appends ──────────────────────────────────────────────────
 
-TEST(WalTest, ConcurrentAppendsDoNotCorruptLog) {
+TEST(WalTest, ConcurrentAppendsDoNotCorruptLog)
+{
     TempWalFile tmp;
     constexpr int kThreads = 4;
     constexpr int kEntriesPerThread = 100;
@@ -372,15 +400,18 @@ TEST(WalTest, ConcurrentAppendsDoNotCorruptLog) {
 
         std::vector<std::thread> threads;
         threads.reserve(kThreads);
-        for (int t = 0; t < kThreads; ++t) {
+        for (int t = 0; t < kThreads; ++t)
+        {
             threads.emplace_back([&wal, t]() {
-                for (int i = 0; i < kEntriesPerThread; ++i) {
+                for (int i = 0; i < kEntriesPerThread; ++i)
+                {
                     std::string key = "t" + std::to_string(t) + "_k" + std::to_string(i);
                     wal.appendPut(key, "val_" + std::to_string(i));
                 }
             });
         }
-        for (auto& th : threads) {
+        for (auto& th : threads)
+        {
             th.join();
         }
     }
@@ -393,7 +424,8 @@ TEST(WalTest, ConcurrentAppendsDoNotCorruptLog) {
     // All sequence numbers should be unique
     std::vector<uint64_t> seqs;
     seqs.reserve(entries.size());
-    for (const auto& e : entries) {
+    for (const auto& e : entries)
+    {
         seqs.push_back(e.sequenceNumber);
     }
     std::sort(seqs.begin(), seqs.end());
@@ -404,7 +436,8 @@ TEST(WalTest, ConcurrentAppendsDoNotCorruptLog) {
 
 // ── Crash recovery ──────────────────────────────────────────────────────
 
-TEST(WalTest, TornTailThenAppendKeepsAllAcknowledgedWrites) {
+TEST(WalTest, TornTailThenAppendKeepsAllAcknowledgedWrites)
+{
     TempWalFile tmp;
     {
         WriteAheadLog wal(tmp.path());
@@ -425,7 +458,8 @@ TEST(WalTest, TornTailThenAppendKeepsAllAcknowledgedWrites) {
     EXPECT_EQ(entries[3].key, "e");
 }
 
-TEST(WalTest, DamagedHeaderInMiddleKeepsLaterRecords) {
+TEST(WalTest, DamagedHeaderInMiddleKeepsLaterRecords)
+{
     TempWalFile tmp;
     std::uintmax_t secondRecordOffset = 0;
     {
@@ -448,11 +482,30 @@ TEST(WalTest, DamagedHeaderInMiddleKeepsLaterRecords) {
     EXPECT_EQ(entries[1].key, "third");
 }
 
-TEST(WalTest, SequenceKeepsIncreasingAfterTruncate) {
+TEST(WalTest, SequenceKeepsIncreasingAfterTruncate)
+{
     TempWalFile tmp;
     WriteAheadLog wal(tmp.path());
     wal.appendPut("a", "1");
     wal.appendPut("b", "2");
     wal.truncate();
     EXPECT_EQ(wal.appendPut("c", "3"), 3u);
+}
+
+TEST(WalTest, RecoveredEntriesMatchTheLogAndAreTakenOnce)
+{
+    TempWalFile tmp;
+    {
+        WriteAheadLog wal(tmp.path());
+        wal.appendPut("a", "1");
+        wal.appendPut("b", "2");
+    }
+    WriteAheadLog wal(tmp.path());
+    auto recovered = wal.takeRecoveredEntries();
+    auto replayed = wal.replay();
+    ASSERT_EQ(recovered.size(), 2u);
+    ASSERT_EQ(replayed.size(), 2u);
+    EXPECT_EQ(recovered[1].key, replayed[1].key);
+    EXPECT_EQ(recovered[1].sequenceNumber, replayed[1].sequenceNumber);
+    EXPECT_TRUE(wal.takeRecoveredEntries().empty());
 }

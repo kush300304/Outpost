@@ -11,8 +11,10 @@
 
 #include "writeApi/storageClient.h"
 
-namespace outpost {
-namespace writeApi {
+namespace outpost
+{
+namespace writeApi
+{
 
 /// @brief Register all HTTP routes on the given server.
 ///

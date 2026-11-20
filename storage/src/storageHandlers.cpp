@@ -3,17 +3,20 @@
 
 #include "storage/storageHandlers.h"
 
-#include <string>
+#include <spdlog/spdlog.h>
 
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
+#include <string>
 
 using json = nlohmann::json;
 
-namespace outpost {
-namespace storage {
+namespace outpost
+{
+namespace storage
+{
 
-void registerStorageRoutes(httplib::Server& server, KvStore& store) {
+void registerStorageRoutes(httplib::Server& server, KvStore& store)
+{
     server.Get("/health", [](const httplib::Request& /*req*/, httplib::Response& res) {
         json body = {{"status", "healthy"}, {"service", "storage"}};
         res.set_content(body.dump(), "application/json");
@@ -23,12 +26,15 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store) {
         std::string key = req.matches[1].str();
         auto stored = store.get(key);
         json body;
-        if (stored) {
+        if (stored)
+        {
             body = {{"key", key},
                     {"value", stored->value},
                     {"version", stored->version},
                     {"writerId", stored->writerId}};
-        } else {
+        }
+        else
+        {
             res.status = 404;
             body = {{"error", "not_found"}, {"key", key}};
         }
@@ -38,14 +44,14 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store) {
     server.Put(R"(/key/(.+))", [&store](const httplib::Request& req, httplib::Response& res) {
         std::string key = req.matches[1].str();
         json request = json::parse(req.body, nullptr, false);
-        bool valid = request.is_object() && request.contains("value") &&
-                     request["value"].is_string() && request.contains("version") &&
-                     request["version"].is_number_unsigned() &&
-                     request["version"].get<uint64_t>() > 0 && request.contains("writerId") &&
-                     request["writerId"].is_string() &&
-                     !request["writerId"].get<std::string>().empty();
+        bool valid =
+            request.is_object() && request.contains("value") && request["value"].is_string() &&
+            request.contains("version") && request["version"].is_number_unsigned() &&
+            request["version"].get<uint64_t>() > 0 && request.contains("writerId") &&
+            request["writerId"].is_string() && !request["writerId"].get<std::string>().empty();
         json body;
-        if (valid) {
+        if (valid)
+        {
             uint64_t version = request["version"].get<uint64_t>();
             std::string writerId = request["writerId"].get<std::string>();
             PutOutcome outcome =
@@ -57,7 +63,9 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store) {
                     {"writerId", stored ? stored->writerId : writerId}};
             spdlog::debug("PUT /key/{} v={} by {} -> {}", key, version, writerId,
                           putOutcomeToString(outcome));
-        } else {
+        }
+        else
+        {
             res.status = 400;
             body = {{"error", "bad_request"},
                     {"message",

@@ -1,7 +1,7 @@
 /// @file testCircuitBreaker.cpp
 /// @brief Unit tests for outpost::common::CircuitBreaker.
 
-#include "common/circuitBreaker.h"
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <future>
@@ -9,26 +9,30 @@
 #include <thread>
 #include <vector>
 
-#include <gtest/gtest.h>
+#include "common/circuitBreaker.h"
 
 using outpost::common::BreakerState;
 using outpost::common::CircuitBreaker;
 using outpost::common::CircuitBreakerConfig;
 
-TEST(CircuitBreakerTest, StartsInClosedState) {
+TEST(CircuitBreakerTest, StartsInClosedState)
+{
     CircuitBreaker breaker;
     EXPECT_EQ(breaker.state(), BreakerState::CLOSED);
     EXPECT_EQ(breaker.consecutiveFailures(), 0);
 }
 
-TEST(CircuitBreakerTest, ClosedAllowsAllRequests) {
+TEST(CircuitBreakerTest, ClosedAllowsAllRequests)
+{
     CircuitBreaker breaker;
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 100; ++i)
+    {
         EXPECT_TRUE(breaker.isAllowed());
     }
 }
 
-TEST(CircuitBreakerTest, ClosedToOpenAfterThreshold) {
+TEST(CircuitBreakerTest, ClosedToOpenAfterThreshold)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 3;
     CircuitBreaker breaker(config);
@@ -41,7 +45,8 @@ TEST(CircuitBreakerTest, ClosedToOpenAfterThreshold) {
     EXPECT_EQ(breaker.state(), BreakerState::OPEN);
 }
 
-TEST(CircuitBreakerTest, OpenRejectsRequests) {
+TEST(CircuitBreakerTest, OpenRejectsRequests)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::seconds(60);  // Long timeout so it stays OPEN
@@ -53,7 +58,8 @@ TEST(CircuitBreakerTest, OpenRejectsRequests) {
     EXPECT_FALSE(breaker.isAllowed());
 }
 
-TEST(CircuitBreakerTest, SuccessResetFailureCount) {
+TEST(CircuitBreakerTest, SuccessResetFailureCount)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 3;
     CircuitBreaker breaker(config);
@@ -67,7 +73,8 @@ TEST(CircuitBreakerTest, SuccessResetFailureCount) {
     EXPECT_EQ(breaker.state(), BreakerState::CLOSED);
 }
 
-TEST(CircuitBreakerTest, OpenToHalfOpenAfterTimeout) {
+TEST(CircuitBreakerTest, OpenToHalfOpenAfterTimeout)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -84,7 +91,8 @@ TEST(CircuitBreakerTest, OpenToHalfOpenAfterTimeout) {
     EXPECT_EQ(breaker.state(), BreakerState::HALF_OPEN);
 }
 
-TEST(CircuitBreakerTest, HalfOpenSuccessCloses) {
+TEST(CircuitBreakerTest, HalfOpenSuccessCloses)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -99,7 +107,8 @@ TEST(CircuitBreakerTest, HalfOpenSuccessCloses) {
     EXPECT_TRUE(breaker.isAllowed());
 }
 
-TEST(CircuitBreakerTest, HalfOpenFailureReopens) {
+TEST(CircuitBreakerTest, HalfOpenFailureReopens)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -113,7 +122,8 @@ TEST(CircuitBreakerTest, HalfOpenFailureReopens) {
     EXPECT_EQ(breaker.state(), BreakerState::OPEN);
 }
 
-TEST(CircuitBreakerTest, HalfOpenLimitsProbes) {
+TEST(CircuitBreakerTest, HalfOpenLimitsProbes)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -126,15 +136,15 @@ TEST(CircuitBreakerTest, HalfOpenLimitsProbes) {
     EXPECT_FALSE(breaker.isAllowed());  // Second probe blocked
 }
 
-TEST(CircuitBreakerTest, TransitionCallback) {
+TEST(CircuitBreakerTest, TransitionCallback)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 2;
     CircuitBreaker breaker(config);
 
     std::vector<std::pair<BreakerState, BreakerState>> transitions;
-    breaker.onTransition([&transitions](BreakerState from, BreakerState to) {
-        transitions.emplace_back(from, to);
-    });
+    breaker.onTransition(
+        [&transitions](BreakerState from, BreakerState to) { transitions.emplace_back(from, to); });
 
     breaker.recordFailure();
     breaker.recordFailure();  // → OPEN
@@ -144,7 +154,8 @@ TEST(CircuitBreakerTest, TransitionCallback) {
     EXPECT_EQ(transitions[0].second, BreakerState::OPEN);
 }
 
-TEST(CircuitBreakerTest, ForceState) {
+TEST(CircuitBreakerTest, ForceState)
+{
     CircuitBreaker breaker;
     breaker.forceState(BreakerState::OPEN);
     EXPECT_EQ(breaker.state(), BreakerState::OPEN);
@@ -154,7 +165,8 @@ TEST(CircuitBreakerTest, ForceState) {
     EXPECT_EQ(breaker.consecutiveFailures(), 0);
 }
 
-TEST(CircuitBreakerTest, FullLifecycleClosedOpenHalfOpenClosed) {
+TEST(CircuitBreakerTest, FullLifecycleClosedOpenHalfOpenClosed)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 2;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -181,7 +193,8 @@ TEST(CircuitBreakerTest, FullLifecycleClosedOpenHalfOpenClosed) {
     EXPECT_TRUE(breaker.isAllowed());
 }
 
-TEST(CircuitBreakerTest, LostProbeIsReadmittedAfterResetTimeout) {
+TEST(CircuitBreakerTest, LostProbeIsReadmittedAfterResetTimeout)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     config.resetTimeout = std::chrono::milliseconds(100);
@@ -190,7 +203,8 @@ TEST(CircuitBreakerTest, LostProbeIsReadmittedAfterResetTimeout) {
     breaker.recordFailure();
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
     EXPECT_TRUE(breaker.isAllowed());  // probe admitted, its result never recorded
-    for (int i = 0; i < 10 && breaker.isAllowed(); ++i) {
+    for (int i = 0; i < 10 && breaker.isAllowed(); ++i)
+    {
         // drain any further admissions so only the lost-probe path remains
     }
 
@@ -199,14 +213,14 @@ TEST(CircuitBreakerTest, LostProbeIsReadmittedAfterResetTimeout) {
     EXPECT_FALSE(breaker.isAllowed());  // and only one
 }
 
-TEST(CircuitBreakerTest, TransitionCallbackMayQueryBreaker) {
+TEST(CircuitBreakerTest, TransitionCallbackMayQueryBreaker)
+{
     CircuitBreakerConfig config;
     config.failureThreshold = 1;
     auto breaker = std::make_shared<CircuitBreaker>(config);
     auto observed = std::make_shared<std::promise<BreakerState>>();
-    breaker->onTransition([breaker, observed](BreakerState, BreakerState) {
-        observed->set_value(breaker->state());
-    });
+    breaker->onTransition(
+        [breaker, observed](BreakerState, BreakerState) { observed->set_value(breaker->state()); });
 
     std::thread([breaker] { breaker->recordFailure(); }).detach();
     auto future = observed->get_future();

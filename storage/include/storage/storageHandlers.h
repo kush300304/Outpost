@@ -18,8 +18,10 @@
 
 #include "storage/kvStore.h"
 
-namespace outpost {
-namespace storage {
+namespace outpost
+{
+namespace storage
+{
 
 /// @brief Register all storage routes on server, backed by store.
 void registerStorageRoutes(httplib::Server& server, KvStore& store);

@@ -20,35 +20,44 @@
 #include <optional>
 #include <utility>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Circuit breaker states.
-enum class BreakerState : uint8_t {
+enum class BreakerState : uint8_t
+{
     CLOSED = 0,
     OPEN = 1,
     HALF_OPEN = 2,
 };
 
 /// @brief Human-readable name of a state ("CLOSED", "OPEN", "HALF_OPEN").
-inline const char* breakerStateToString(BreakerState state) {
+inline const char* breakerStateToString(BreakerState state)
+{
     const char* name = "HALF_OPEN";
-    if (state == BreakerState::CLOSED) {
+    if (state == BreakerState::CLOSED)
+    {
         name = "CLOSED";
-    } else if (state == BreakerState::OPEN) {
+    }
+    else if (state == BreakerState::OPEN)
+    {
         name = "OPEN";
     }
     return name;
 }
 
 /// @brief Configuration for a circuit breaker instance.
-struct CircuitBreakerConfig {
+struct CircuitBreakerConfig
+{
     int failureThreshold = 5;                       ///< Consecutive failures that open it.
     std::chrono::milliseconds resetTimeout{30000};  ///< OPEN time before a probe; probe timeout.
 };
 
 /// @brief Thread-safe circuit breaker with a single half-open probe.
-class CircuitBreaker {
+class CircuitBreaker
+{
 public:
     using TransitionCallback = std::function<void(BreakerState from, BreakerState to)>;
 

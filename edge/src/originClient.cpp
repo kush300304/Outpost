@@ -4,22 +4,27 @@
 #include "edge/originClient.h"
 
 #include <httplib.h>
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+
+#include <nlohmann/json.hpp>
 
 #include "common/urlEncode.h"
 
 using json = nlohmann::json;
 
-namespace outpost {
-namespace edge {
+namespace outpost
+{
+namespace edge
+{
 
 OriginClient::OriginClient(const std::string& host, int port, std::chrono::milliseconds timeout)
-    : host_(host), port_(port), timeout_(timeout) {
+    : host_(host), port_(port), timeout_(timeout)
+{
     spdlog::info("OriginClient configured: {}:{}", host_, port_);
 }
 
-OriginResponse OriginClient::get(const std::string& key) {
+OriginResponse OriginClient::get(const std::string& key)
+{
     ++totalRequests_;
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
@@ -28,12 +33,15 @@ OriginResponse OriginClient::get(const std::string& key) {
 
     OriginResponse response;
     auto res = cli.Get("/key/" + common::encodePathSegment(key));
-    if (!res) {
+    if (!res)
+    {
         ++failedRequests_;
         response.errorMessage =
             "Connection failed: " + std::string(httplib::to_string(res.error()));
         spdlog::error("OriginClient GET /key/{}: {}", key, response.errorMessage);
-    } else {
+    }
+    else
+    {
         response.httpStatus = res->status;
         response.body = res->body;
         response.success = res->status == 200;
@@ -42,8 +50,9 @@ OriginResponse OriginClient::get(const std::string& key) {
     return response;
 }
 
-OriginResponse OriginClient::put(const std::string& key, const std::string& value,
-                                 uint64_t version, const std::string& writerId) {
+OriginResponse OriginClient::put(const std::string& key, const std::string& value, uint64_t version,
+                                 const std::string& writerId)
+{
     ++totalRequests_;
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
@@ -54,16 +63,20 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
     auto res = cli.Put("/key/" + common::encodePathSegment(key), body.dump(), "application/json");
 
     OriginResponse response;
-    if (!res) {
+    if (!res)
+    {
         ++failedRequests_;
         response.errorMessage =
             "Connection failed: " + std::string(httplib::to_string(res.error()));
         spdlog::error("OriginClient PUT /key/{}: {}", key, response.errorMessage);
-    } else {
+    }
+    else
+    {
         response.httpStatus = res->status;
         response.body = res->body;
         response.success = res->status == 200;
-        if (!response.success) {
+        if (!response.success)
+        {
             ++failedRequests_;
             response.errorMessage = "Origin returned HTTP " + std::to_string(res->status);
         }
@@ -71,7 +84,8 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
     return response;
 }
 
-bool OriginClient::healthCheck() {
+bool OriginClient::healthCheck()
+{
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
