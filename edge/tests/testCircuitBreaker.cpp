@@ -219,8 +219,10 @@ TEST(CircuitBreakerTest, TransitionCallbackMayQueryBreaker)
     config.failureThreshold = 1;
     auto breaker = std::make_shared<CircuitBreaker>(config);
     auto observed = std::make_shared<std::promise<BreakerState>>();
-    breaker->onTransition(
-        [breaker, observed](BreakerState, BreakerState) { observed->set_value(breaker->state()); });
+    std::weak_ptr<CircuitBreaker> weakBreaker = breaker;  // a shared_ptr here would be a cycle
+    breaker->onTransition([weakBreaker, observed](BreakerState, BreakerState) {
+        observed->set_value(weakBreaker.lock()->state());
+    });
 
     std::thread([breaker] { breaker->recordFailure(); }).detach();
     auto future = observed->get_future();
