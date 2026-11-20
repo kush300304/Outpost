@@ -87,7 +87,7 @@ function renderOrigin(response) {
     } else {
         setPill(node.querySelector('.pill'), 'down', response.status === 404 ? 'unknown (admin off)' : 'down (unreachable)');
         node.querySelector('.detail').textContent = '';
-        toggle.disabled = response.status === 404;
+        toggle.disabled = true;
         status.textContent = response.status === 404
             ? 'The admin endpoint is disabled (ADMIN_ENABLED is not 1).'
             : 'write-api is unreachable.';

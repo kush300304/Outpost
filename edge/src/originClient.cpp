@@ -5,6 +5,7 @@
 
 #include <httplib.h>
 #include <spdlog/spdlog.h>
+#include <sys/socket.h>
 
 #include <nlohmann/json.hpp>
 
@@ -27,6 +28,7 @@ OriginResponse OriginClient::get(const std::string& key)
 {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
@@ -55,6 +57,7 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
 {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
@@ -87,6 +90,7 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
 bool OriginClient::healthCheck()
 {
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);

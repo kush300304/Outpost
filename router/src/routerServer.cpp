@@ -145,6 +145,7 @@ void RouterServer::forward(const httplib::Request& req, httplib::Response& res)
         {
             EdgeStatus& edge = *edges_.at(owner);
             httplib::Client cli(edge.node.host, edge.node.port);
+            cli.set_address_family(AF_INET);
             cli.set_url_encode(false);
             cli.set_connection_timeout(config_.edgeTimeout);
             cli.set_read_timeout(config_.edgeTimeout);
@@ -199,6 +200,7 @@ void RouterServer::healthLoop()
         for (const auto& [id, edge] : edges_)
         {
             httplib::Client cli(edge->node.host, edge->node.port);
+            cli.set_address_family(AF_INET);
             cli.set_connection_timeout(config_.edgeTimeout);
             cli.set_read_timeout(config_.edgeTimeout);
             auto result = cli.Get("/health");

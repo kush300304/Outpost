@@ -5,6 +5,7 @@
 
 #include <httplib.h>
 #include <spdlog/spdlog.h>
+#include <sys/socket.h>
 
 #include <nlohmann/json.hpp>
 
@@ -25,6 +26,7 @@ StorageClient::StorageClient(const std::string& host, int port) : host_(host), p
 StorageResponse StorageClient::get(const std::string& key)
 {
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
@@ -50,6 +52,7 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
                                    uint64_t version, const std::string& writerId)
 {
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(2);
     cli.set_read_timeout(5);
@@ -81,6 +84,7 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
 bool StorageClient::isHealthy()
 {
     httplib::Client cli(host_, port_);
+    cli.set_address_family(AF_INET);
     cli.set_url_encode(false);
     cli.set_connection_timeout(1);
     cli.set_read_timeout(1);
