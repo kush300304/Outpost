@@ -1,6 +1,6 @@
 # Outpost cluster: router → 3 edges → write-api → storage.
-# Only the router (8080) is published to the host; every other service is reachable only inside
-# the compose network. Start with: docker compose up -d --build
+# Published to the host: the router (8080, client entry point) and the dashboard (8090). Every other
+# service is reachable only inside the compose network. Start with: docker compose up -d --build
 
 name: outpost
 
@@ -43,6 +43,8 @@ services:
       PORT: "9090"
       STORAGE_HOST: storage
       STORAGE_PORT: "9091"
+      # The dashboard's simulated-outage toggle; reachable only through the dashboard proxy.
+      ADMIN_ENABLED: "${ADMIN_ENABLED:-1}"
     depends_on:
       storage:
         condition: service_healthy
@@ -116,6 +118,19 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+    ports:
+      - "8090:8090"
+    depends_on:
+      router:
+        condition: service_healthy
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
     restart: unless-stopped
 
   # Load generator for scripts/runBenchmark.sh; started only with --profile bench.

@@ -1,0 +1,119 @@
+<!doctype html>
+<!-- @file index.html
+     Outpost dashboard: live view of the cluster and controls for the demo sequence.
+     Served by nginx on port 8090, which proxies /router, /edge1..3 and /origin-admin. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Outpost dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+    <h1>Outpost</h1>
+    <p class="muted" id="pollStatus" aria-live="polite">Connecting…</p>
+</header>
+
+<main>
+    <section aria-labelledby="topologyTitle">
+        <h2 id="topologyTitle">Cluster topology</h2>
+        <ol class="topology" id="topology">
+            <li class="node" data-node="router"><span class="nodeName">router</span>
+                <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+            <li class="arrow" aria-hidden="true">→</li>
+            <li class="nodeGroup">
+                <ol class="edges">
+                    <li class="node" data-node="edge-1"><span class="nodeName">edge-1</span>
+                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+                    <li class="node" data-node="edge-2"><span class="nodeName">edge-2</span>
+                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+                    <li class="node" data-node="edge-3"><span class="nodeName">edge-3</span>
+                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+                </ol>
+            </li>
+            <li class="arrow" aria-hidden="true">→</li>
+            <li class="node" data-node="origin"><span class="nodeName">origin (write-api + storage)</span>
+                <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+        </ol>
+    </section>
+
+    <section aria-labelledby="edgesTitle">
+        <h2 id="edgesTitle">Edges</h2>
+        <div class="grid" id="edgePanels"></div>
+    </section>
+
+    <section class="grid controls" aria-label="Controls">
+        <form class="card" id="requestForm">
+            <h2>Request tester</h2>
+            <p class="muted">Sent through <code>/router</code>, like any client.</p>
+            <label>Key <input id="reqKey" name="key" required value="demo" autocomplete="off"></label>
+            <label>Method
+                <select id="reqMethod" name="method">
+                    <option>GET</option>
+                    <option>PUT</option>
+                </select>
+            </label>
+            <label>Value <input id="reqValue" name="value" value="hello" autocomplete="off"></label>
+            <button type="submit">Send</button>
+            <dl class="result" id="reqResult" aria-live="polite"></dl>
+            <pre class="body" id="reqBody" aria-live="polite"></pre>
+        </form>
+
+        <div class="card">
+            <h2>Simulated origin outage</h2>
+            <p class="muted">Tells write-api to answer 503 on /health and every /key request. No container
+                is stopped: this is <strong>simulated</strong>.</p>
+            <button type="button" id="outageToggle" aria-pressed="false">Start simulated outage</button>
+            <p id="outageStatus" aria-live="polite">Status unknown</p>
+        </div>
+
+        <form class="card" id="loadForm">
+            <h2>Mini load generator</h2>
+            <p class="muted">GETs keys <code>load-0</code> … <code>load-(K-1)</code> through the router.</p>
+            <label>Requests (N) <input id="loadCount" type="number" min="1" max="5000" value="300"></label>
+            <label>Concurrency (C) <input id="loadConcurrency" type="number" min="1" max="32" value="6"></label>
+            <label>Key range (K) <input id="loadRange" type="number" min="1" max="10000" value="50"></label>
+            <button type="submit" id="loadStart">Run</button>
+            <p class="muted" id="loadProgress" aria-live="polite"></p>
+            <dl class="result" id="loadResult"></dl>
+            <p class="muted small">Latencies are browser-measured, not a benchmark (browsers also cap
+                parallel connections per host).</p>
+        </form>
+    </section>
+
+    <section aria-labelledby="eventsTitle">
+        <h2 id="eventsTitle">Event log <span class="muted small">(latest 100, all edges)</span></h2>
+        <div class="tableWrap">
+            <table>
+                <thead><tr><th scope="col">Time</th><th scope="col">Edge</th><th scope="col">Type</th><th scope="col">Event</th></tr></thead>
+                <tbody id="events"></tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<template id="edgePanelTemplate">
+    <article class="card edgePanel">
+        <header class="panelHead">
+            <h3 class="edgeName"></h3>
+            <span class="pill" data-state="unknown">unknown</span>
+        </header>
+        <dl class="metrics">
+            <div><dt>Hit rate</dt><dd><span class="hitRate">–</span>
+                <svg class="spark hitSpark" viewBox="0 0 120 24" aria-hidden="true"><path/></svg></dd></div>
+            <div><dt>Entries / capacity</dt><dd class="entries">–</dd></div>
+            <div><dt>Breaker</dt><dd class="breaker">–</dd></div>
+            <div><dt>Your tokens left</dt><dd class="tokens">–</dd></div>
+            <div><dt>Queued writes</dt><dd><span class="pending">–</span>
+                <svg class="spark queueSpark" viewBox="0 0 120 24" aria-hidden="true"><path/></svg></dd></div>
+            <div><dt>Stale serves / 429s</dt><dd class="staleAnd429">–</dd></div>
+        </dl>
+        <h4>Recent breaker transitions</h4>
+        <ol class="transitions"></ol>
+    </article>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>
