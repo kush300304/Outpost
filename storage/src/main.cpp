@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "common/shutdownSignal.h"
 #include "storage/kvStore.h"
 #include "storage/storageHandlers.h"
 
@@ -37,6 +38,10 @@ int main()
 
     httplib::Server server;
     outpost::storage::registerStorageRoutes(server, store);
+    outpost::common::ShutdownSignal shutdown([&server] {
+        spdlog::info("Shutdown signal received, stopping");
+        server.stop();
+    });
     spdlog::info("Starting storage service on port {}", port);
     bool listened = server.listen("0.0.0.0", port);
     if (!listened)

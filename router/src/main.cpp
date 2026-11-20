@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 
+#include "common/shutdownSignal.h"
 #include "router/routerServer.h"
 
 int main()
@@ -57,6 +58,10 @@ int main()
     }
 
     outpost::router::RouterServer server(config);
+    outpost::common::ShutdownSignal shutdown([&server] {
+        spdlog::info("Shutdown signal received, stopping");
+        server.stop();
+    });
     bool served = server.bind() > 0 && server.serve();
     return served ? 0 : 1;
 }

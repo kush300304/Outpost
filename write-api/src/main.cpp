@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "common/shutdownSignal.h"
 #include "writeApi/apiHandlers.h"
 #include "writeApi/storageClient.h"
 
@@ -33,6 +34,10 @@ int main()
     outpost::writeApi::StorageClient storageClient(storageHost, storagePort);
     httplib::Server server;
     outpost::writeApi::registerHandlers(server, storageClient);
+    outpost::common::ShutdownSignal shutdown([&server] {
+        spdlog::info("Shutdown signal received, stopping");
+        server.stop();
+    });
 
     spdlog::info("Starting write-api on port {} (storage -> {}:{})", port, storageHost,
                  storagePort);

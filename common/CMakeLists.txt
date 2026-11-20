@@ -6,6 +6,7 @@ add_library(outpost_common
     src/circuitBreaker.cpp
     src/wal.cpp
     src/urlEncode.cpp
+    src/shutdownSignal.cpp
 )
 
 target_include_directories(outpost_common PUBLIC
@@ -19,6 +20,7 @@ if(BUILD_TESTING)
     add_executable(common_tests
         tests/testWal.cpp
         tests/testUrlEncode.cpp
+        tests/testShutdownSignal.cpp
     )
     target_link_libraries(common_tests PRIVATE
         outpost_common

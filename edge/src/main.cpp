@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <string>
 
+#include "common/shutdownSignal.h"
 #include "edge/edgeServer.h"
 
 int main()
@@ -56,6 +57,10 @@ int main()
     config.maxTrackedClients = std::stoul(env("MAX_TRACKED_CLIENTS", "10000"));
 
     outpost::edge::EdgeServer server(config);
+    outpost::common::ShutdownSignal shutdown([&server] {
+        spdlog::info("Shutdown signal received, stopping");
+        server.stop();
+    });
     bool served = server.bind() > 0 && server.serve();
     return served ? 0 : 1;
 }
