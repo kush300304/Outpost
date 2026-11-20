@@ -3,6 +3,7 @@
 
 #include "common/lruCache.h"
 
+#include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
@@ -176,4 +177,53 @@ TEST(LruCacheTest, ConcurrentAccess) {
 
     // Just verify no crash — exact state depends on scheduling
     EXPECT_LE(cache.size(), 100u);
+}
+
+// ── Freshness and versions ──────────────────────────────────────────────
+
+TEST(LruCacheTest, EntryExpiresAfterTtlButStaysAvailableAsStale) {
+    LruCache cache(10, std::chrono::milliseconds(50));
+    cache.put("k", "v");
+    EXPECT_EQ(cache.get("k").value_or(""), "v");
+    std::this_thread::sleep_for(std::chrono::milliseconds(70));
+    EXPECT_FALSE(cache.get("k").has_value());
+    auto stale = cache.lookup("k");
+    ASSERT_TRUE(stale.has_value());
+    EXPECT_EQ(stale->value, "v");
+    EXPECT_FALSE(stale->fresh);
+}
+
+TEST(LruCacheTest, ZeroTtlNeverExpires) {
+    LruCache cache(10);
+    cache.put("k", "v");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto entry = cache.lookup("k");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_TRUE(entry->fresh);
+}
+
+TEST(LruCacheTest, PutRefreshesAge) {
+    LruCache cache(10, std::chrono::milliseconds(60));
+    cache.put("k", "v1");
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    cache.put("k", "v2");
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    EXPECT_EQ(cache.get("k").value_or(""), "v2");
+}
+
+TEST(LruCacheTest, PutWithOlderVersionIsIgnored) {
+    LruCache cache(10);
+    EXPECT_TRUE(cache.put("k", "newer", 20));
+    EXPECT_FALSE(cache.put("k", "older", 10));
+    EXPECT_TRUE(cache.put("k", "newest", 30));
+    EXPECT_EQ(cache.get("k").value_or(""), "newest");
+}
+
+TEST(LruCacheTest, ExpiredLookupCountsAsMiss) {
+    LruCache cache(10, std::chrono::milliseconds(10));
+    cache.put("k", "v");
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    cache.lookup("k");
+    EXPECT_EQ(cache.stats().misses, 1u);
+    EXPECT_EQ(cache.stats().hits, 0u);
 }
