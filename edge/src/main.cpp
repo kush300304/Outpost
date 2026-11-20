@@ -18,15 +18,16 @@
 ///   RATE_LIMIT_BURST           token bucket capacity per client (default 200)
 ///   MAX_TRACKED_CLIENTS        client buckets kept before eviction (default 10000)
 
+#include <spdlog/spdlog.h>
+
 #include <chrono>
 #include <cstdlib>
 #include <string>
 
-#include <spdlog/spdlog.h>
-
 #include "edge/edgeServer.h"
 
-int main() {
+int main()
+{
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [edge] %v");
     spdlog::set_level(spdlog::level::info);
 

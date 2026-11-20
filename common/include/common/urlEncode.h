@@ -10,8 +10,10 @@
 
 #include <string>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Percent-encode value for use as one URL path segment.
 std::string encodePathSegment(const std::string& value);

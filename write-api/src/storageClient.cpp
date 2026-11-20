@@ -4,21 +4,26 @@
 #include "writeApi/storageClient.h"
 
 #include <httplib.h>
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
+
+#include <nlohmann/json.hpp>
 
 #include "common/urlEncode.h"
 
 using json = nlohmann::json;
 
-namespace outpost {
-namespace writeApi {
+namespace outpost
+{
+namespace writeApi
+{
 
-StorageClient::StorageClient(const std::string& host, int port) : host_(host), port_(port) {
+StorageClient::StorageClient(const std::string& host, int port) : host_(host), port_(port)
+{
     spdlog::info("StorageClient configured: {}:{}", host_, port_);
 }
 
-StorageResponse StorageClient::get(const std::string& key) {
+StorageResponse StorageClient::get(const std::string& key)
+{
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
     cli.set_connection_timeout(2);
@@ -26,11 +31,14 @@ StorageResponse StorageClient::get(const std::string& key) {
 
     StorageResponse response;
     auto res = cli.Get("/key/" + common::encodePathSegment(key));
-    if (!res) {
+    if (!res)
+    {
         response.errorMessage =
             "Connection failed: " + std::string(httplib::to_string(res.error()));
         spdlog::error("StorageClient GET /key/{}: {}", key, response.errorMessage);
-    } else {
+    }
+    else
+    {
         response.httpStatus = res->status;
         response.body = res->body;
         response.success = res->status == 200;
@@ -39,7 +47,8 @@ StorageResponse StorageClient::get(const std::string& key) {
 }
 
 StorageResponse StorageClient::put(const std::string& key, const std::string& value,
-                                   uint64_t version, const std::string& writerId) {
+                                   uint64_t version, const std::string& writerId)
+{
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
     cli.set_connection_timeout(2);
@@ -49,15 +58,19 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
     auto res = cli.Put("/key/" + common::encodePathSegment(key), body.dump(), "application/json");
 
     StorageResponse response;
-    if (!res) {
+    if (!res)
+    {
         response.errorMessage =
             "Connection failed: " + std::string(httplib::to_string(res.error()));
         spdlog::error("StorageClient PUT /key/{}: {}", key, response.errorMessage);
-    } else {
+    }
+    else
+    {
         response.httpStatus = res->status;
         response.body = res->body;
         response.success = res->status == 200;
-        if (!response.success) {
+        if (!response.success)
+        {
             response.errorMessage = "Storage returned HTTP " + std::to_string(res->status);
             spdlog::warn("StorageClient PUT /key/{}: {}", key, response.errorMessage);
         }
@@ -65,7 +78,8 @@ StorageResponse StorageClient::put(const std::string& key, const std::string& va
     return response;
 }
 
-bool StorageClient::isHealthy() {
+bool StorageClient::isHealthy()
+{
     httplib::Client cli(host_, port_);
     cli.set_url_encode(false);
     cli.set_connection_timeout(1);

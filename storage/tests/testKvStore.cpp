@@ -5,8 +5,7 @@
 /// durability across restart, idempotent replay of a log that contains repeated or older records,
 /// and concurrent access.
 
-#include "storage/kvStore.h"
-
+#include <gtest/gtest.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -16,9 +15,8 @@
 #include <thread>
 #include <vector>
 
-#include <gtest/gtest.h>
-
 #include "common/wal.h"
+#include "storage/kvStore.h"
 
 using outpost::common::WalEntry;
 using outpost::common::WalOperation;
@@ -29,16 +27,19 @@ using outpost::storage::PutOutcome;
 namespace fs = std::filesystem;
 
 /// @brief Unique WAL path per test, removed afterwards.
-class KvStoreDurableTest : public ::testing::Test {
+class KvStoreDurableTest : public ::testing::Test
+{
 protected:
-    void SetUp() override {
+    void SetUp() override
+    {
         path_ = (fs::temp_directory_path() /
                  ("outpost_kv_" + std::to_string(::getpid()) + "_" +
                   ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".wal"))
                     .string();
         fs::remove(path_);
     }
-    void TearDown() override {
+    void TearDown() override
+    {
         std::error_code ec;
         fs::remove(path_, ec);
     }
@@ -47,12 +48,14 @@ protected:
 
 // ── Last-writer-wins ────────────────────────────────────────────────────
 
-TEST(KvStoreTest, GetOnEmptyStoreReturnsNullopt) {
+TEST(KvStoreTest, GetOnEmptyStoreReturnsNullopt)
+{
     KvStore store;
     EXPECT_FALSE(store.get("nonexistent").has_value());
 }
 
-TEST(KvStoreTest, FirstPutIsAppliedWithItsVersion) {
+TEST(KvStoreTest, FirstPutIsAppliedWithItsVersion)
+{
     KvStore store;
     EXPECT_EQ(store.put("alpha", "100", 10, "edge-1"), PutOutcome::APPLIED);
     auto stored = store.get("alpha");
@@ -62,14 +65,16 @@ TEST(KvStoreTest, FirstPutIsAppliedWithItsVersion) {
     EXPECT_EQ(stored->writerId, "edge-1");
 }
 
-TEST(KvStoreTest, NewerVersionOverwrites) {
+TEST(KvStoreTest, NewerVersionOverwrites)
+{
     KvStore store;
     store.put("key", "original", 10, "edge-1");
     EXPECT_EQ(store.put("key", "updated", 11, "edge-2"), PutOutcome::APPLIED);
     EXPECT_EQ(store.get("key")->value, "updated");
 }
 
-TEST(KvStoreTest, SameVersionAndWriterIsDuplicate) {
+TEST(KvStoreTest, SameVersionAndWriterIsDuplicate)
+{
     KvStore store;
     store.put("key", "v", 10, "edge-1");
     EXPECT_EQ(store.put("key", "v", 10, "edge-1"), PutOutcome::DUPLICATE);
@@ -78,7 +83,8 @@ TEST(KvStoreTest, SameVersionAndWriterIsDuplicate) {
     EXPECT_EQ(store.counters().duplicates, 1u);
 }
 
-TEST(KvStoreTest, OlderVersionNeverOverwritesNewerData) {
+TEST(KvStoreTest, OlderVersionNeverOverwritesNewerData)
+{
     KvStore store;
     store.put("key", "newer", 20, "edge-1");
     EXPECT_EQ(store.put("key", "older", 10, "edge-2"), PutOutcome::SUPERSEDED);
@@ -86,7 +92,8 @@ TEST(KvStoreTest, OlderVersionNeverOverwritesNewerData) {
     EXPECT_EQ(store.counters().superseded, 1u);
 }
 
-TEST(KvStoreTest, EqualVersionTieBreaksOnWriterId) {
+TEST(KvStoreTest, EqualVersionTieBreaksOnWriterId)
+{
     KvStore store;
     store.put("key", "from-a", 10, "edge-a");
     EXPECT_EQ(store.put("key", "from-b", 10, "edge-b"), PutOutcome::APPLIED);
@@ -94,7 +101,8 @@ TEST(KvStoreTest, EqualVersionTieBreaksOnWriterId) {
     EXPECT_EQ(store.get("key")->value, "from-b");
 }
 
-TEST(KvStoreTest, GetAllKeysReturnsAllInsertedKeys) {
+TEST(KvStoreTest, GetAllKeysReturnsAllInsertedKeys)
+{
     KvStore store;
     store.put("x", "1", 1, "w");
     store.put("y", "2", 1, "w");
@@ -105,7 +113,8 @@ TEST(KvStoreTest, GetAllKeysReturnsAllInsertedKeys) {
     EXPECT_EQ(store.size(), 3u);
 }
 
-TEST(KvStoreTest, ForEachVisitsAllEntries) {
+TEST(KvStoreTest, ForEachVisitsAllEntries)
+{
     KvStore store;
     store.put("k1", "v1", 1, "w");
     store.put("k2", "v2", 1, "w");
@@ -119,7 +128,8 @@ TEST(KvStoreTest, ForEachVisitsAllEntries) {
     EXPECT_EQ(visited[1], std::make_pair(std::string("k2"), std::string("v2")));
 }
 
-TEST(KvStoreTest, EmptyKeyAndLargeValue) {
+TEST(KvStoreTest, EmptyKeyAndLargeValue)
+{
     KvStore store;
     std::string large(1 << 20, 'X');
     store.put("", "", 1, "w");
@@ -130,7 +140,8 @@ TEST(KvStoreTest, EmptyKeyAndLargeValue) {
 
 // ── Durability and replay ───────────────────────────────────────────────
 
-TEST_F(KvStoreDurableTest, StateSurvivesRestart) {
+TEST_F(KvStoreDurableTest, StateSurvivesRestart)
+{
     {
         KvStore store(path_, false);
         store.put("a", "1", 1, "edge-1");
@@ -145,7 +156,8 @@ TEST_F(KvStoreDurableTest, StateSurvivesRestart) {
     EXPECT_EQ(reopened.put("a", "2", 2, "edge-1"), PutOutcome::DUPLICATE);
 }
 
-TEST_F(KvStoreDurableTest, OnlyAppliedWritesAreLogged) {
+TEST_F(KvStoreDurableTest, OnlyAppliedWritesAreLogged)
+{
     {
         KvStore store(path_, false);
         store.put("k", "new", 20, "edge-1");
@@ -156,7 +168,8 @@ TEST_F(KvStoreDurableTest, OnlyAppliedWritesAreLogged) {
     EXPECT_EQ(wal.size(), 1u);
 }
 
-TEST_F(KvStoreDurableTest, ReplayIsIdempotentWhenLogRepeatsOrReordersRecords) {
+TEST_F(KvStoreDurableTest, ReplayIsIdempotentWhenLogRepeatsOrReordersRecords)
+{
     {
         WriteAheadLog wal(path_, false);
         WalEntry newer{WalOperation::PUT, "k", "newer", 20, "edge-1"};
@@ -172,40 +185,48 @@ TEST_F(KvStoreDurableTest, ReplayIsIdempotentWhenLogRepeatsOrReordersRecords) {
 
 // ── Concurrency ─────────────────────────────────────────────────────────
 
-TEST(KvStoreTest, ConcurrentWritesDoNotCorrupt) {
+TEST(KvStoreTest, ConcurrentWritesDoNotCorrupt)
+{
     KvStore store;
     constexpr int kNumThreads = 8;
     constexpr int kWritesPerThread = 1000;
     std::vector<std::thread> threads;
-    for (int t = 0; t < kNumThreads; ++t) {
+    for (int t = 0; t < kNumThreads; ++t)
+    {
         threads.emplace_back([&store, t]() {
-            for (int i = 0; i < kWritesPerThread; ++i) {
+            for (int i = 0; i < kWritesPerThread; ++i)
+            {
                 store.put("t" + std::to_string(t) + "_k" + std::to_string(i), std::to_string(i),
                           static_cast<uint64_t>(i + 1), "w" + std::to_string(t));
             }
         });
     }
-    for (auto& thread : threads) {
+    for (auto& thread : threads)
+    {
         thread.join();
     }
     EXPECT_EQ(store.size(), static_cast<std::size_t>(kNumThreads * kWritesPerThread));
     EXPECT_EQ(store.counters().applied, static_cast<uint64_t>(kNumThreads * kWritesPerThread));
 }
 
-TEST(KvStoreTest, ConcurrentWritersConvergeOnHighestVersion) {
+TEST(KvStoreTest, ConcurrentWritersConvergeOnHighestVersion)
+{
     KvStore store;
     constexpr int kWriters = 4;
     constexpr int kVersions = 500;
     std::vector<std::thread> threads;
-    for (int t = 0; t < kWriters; ++t) {
+    for (int t = 0; t < kWriters; ++t)
+    {
         threads.emplace_back([&store, t]() {
-            for (int v = 1; v <= kVersions; ++v) {
+            for (int v = 1; v <= kVersions; ++v)
+            {
                 store.put("shared", "v" + std::to_string(v) + "-w" + std::to_string(t),
                           static_cast<uint64_t>(v), "w" + std::to_string(t));
             }
         });
     }
-    for (auto& thread : threads) {
+    for (auto& thread : threads)
+    {
         thread.join();
     }
     auto stored = store.get("shared");

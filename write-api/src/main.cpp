@@ -8,16 +8,17 @@
 ///   STORAGE_HOST  storage service hostname (default "storage")
 ///   STORAGE_PORT  storage service port (default 9091)
 
-#include <cstdlib>
-#include <string>
-
 #include <httplib.h>
 #include <spdlog/spdlog.h>
+
+#include <cstdlib>
+#include <string>
 
 #include "writeApi/apiHandlers.h"
 #include "writeApi/storageClient.h"
 
-int main() {
+int main()
+{
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [write-api] %v");
     spdlog::set_level(spdlog::level::info);
 
@@ -36,7 +37,8 @@ int main() {
     spdlog::info("Starting write-api on port {} (storage -> {}:{})", port, storageHost,
                  storagePort);
     bool listened = server.listen("0.0.0.0", port);
-    if (!listened) {
+    if (!listened)
+    {
         spdlog::error("Failed to bind to port {}", port);
     }
     return listened ? 0 : 1;

@@ -8,8 +8,10 @@
 
 #include <cstddef>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 constexpr std::size_t kMaxKeyBytes = 256;            ///< Longest accepted key, in bytes.
 constexpr std::size_t kMaxValueBytes = 1024 * 1024;  ///< Largest accepted value, in bytes.

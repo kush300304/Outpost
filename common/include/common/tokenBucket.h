@@ -15,11 +15,14 @@
 #include <cstdint>
 #include <mutex>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Thread-safe token bucket rate limiter.
-class TokenBucket {
+class TokenBucket
+{
 public:
     /// @param capacity    Maximum tokens the bucket can hold (burst size); must be > 0.
     /// @param refillRate  Tokens added per second; must be >= 0.
@@ -39,10 +42,16 @@ public:
     double tokensAvailable();
 
     /// @brief Return the bucket capacity (max burst).
-    std::size_t capacity() const { return capacity_; }
+    std::size_t capacity() const
+    {
+        return capacity_;
+    }
 
     /// @brief Return the refill rate (tokens/second).
-    double refillRate() const { return refillRate_; }
+    double refillRate() const
+    {
+        return refillRate_;
+    }
 
     /// @brief Return the total number of requests that were allowed.
     uint64_t allowed() const;

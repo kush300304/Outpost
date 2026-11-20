@@ -21,11 +21,14 @@
 
 #include "common/wal.h"
 
-namespace outpost {
-namespace storage {
+namespace outpost
+{
+namespace storage
+{
 
 /// @brief Result of a versioned put.
-enum class PutOutcome {
+enum class PutOutcome
+{
     APPLIED,     ///< The write was newer and is now the stored value.
     DUPLICATE,   ///< The same (version, writerId) is already stored; nothing changed.
     SUPERSEDED,  ///< A newer write is already stored; nothing changed.
@@ -35,7 +38,8 @@ enum class PutOutcome {
 const char* putOutcomeToString(PutOutcome outcome);
 
 /// @brief A stored value with the identity of the write that produced it.
-struct VersionedValue {
+struct VersionedValue
+{
     std::string value;
     uint64_t version = 0;
     std::string writerId;
@@ -45,10 +49,12 @@ struct VersionedValue {
 ///
 /// Reads take a shared lock; puts take an exclusive lock that also covers the WAL append, so the
 /// log order always matches the order in which writes were applied.
-class KvStore {
+class KvStore
+{
 public:
     /// @brief Counters of put outcomes since construction.
-    struct Counters {
+    struct Counters
+    {
         uint64_t applied = 0;
         uint64_t duplicates = 0;
         uint64_t superseded = 0;
@@ -83,8 +89,8 @@ public:
     std::vector<std::string> getAllKeys() const;
 
     /// @brief Call fn for every key and value while holding a shared lock.
-    void forEach(const std::function<void(const std::string& key, const std::string& value)>& fn)
-        const;
+    void forEach(
+        const std::function<void(const std::string& key, const std::string& value)>& fn) const;
 
     /// @brief Whether this store is backed by a WAL.
     bool isDurable() const;

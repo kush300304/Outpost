@@ -9,11 +9,14 @@
 #include <cstdint>
 #include <string>
 
-namespace outpost {
-namespace writeApi {
+namespace outpost
+{
+namespace writeApi
+{
 
 /// @brief Result of a storage operation.
-struct StorageResponse {
+struct StorageResponse
+{
     int httpStatus = 0;
     std::string body;
     bool success = false;
@@ -24,7 +27,8 @@ struct StorageResponse {
 ///
 /// Encapsulates host/port configuration and provides typed methods for
 /// GET and versioned PUT operations on the storage KV API.
-class StorageClient {
+class StorageClient
+{
 public:
     /// @param host Storage service hostname (e.g., "storage" in Docker network).
     /// @param port Storage service port (e.g., 8091).

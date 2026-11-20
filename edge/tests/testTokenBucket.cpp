@@ -1,21 +1,23 @@
 /// @file testTokenBucket.cpp
 /// @brief Unit tests for outpost::common::TokenBucket.
 
-#include "common/tokenBucket.h"
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <stdexcept>
 #include <thread>
 
-#include <gtest/gtest.h>
+#include "common/tokenBucket.h"
 
 using outpost::common::TokenBucket;
 
-TEST(TokenBucketTest, StartsFullAllowsBurstToCapacity) {
+TEST(TokenBucketTest, StartsFullAllowsBurstToCapacity)
+{
     TokenBucket bucket(10, 1.0);  // 10 capacity, 1 token/sec
 
     // Should allow exactly 10 requests (full bucket)
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 10; ++i)
+    {
         EXPECT_TRUE(bucket.tryConsume()) << "Request " << i << " should have been allowed";
     }
 
@@ -23,7 +25,8 @@ TEST(TokenBucketTest, StartsFullAllowsBurstToCapacity) {
     EXPECT_FALSE(bucket.tryConsume());
 }
 
-TEST(TokenBucketTest, ThrottlesWhenEmpty) {
+TEST(TokenBucketTest, ThrottlesWhenEmpty)
+{
     TokenBucket bucket(2, 0.5);
 
     EXPECT_TRUE(bucket.tryConsume());
@@ -32,11 +35,13 @@ TEST(TokenBucketTest, ThrottlesWhenEmpty) {
     EXPECT_FALSE(bucket.tryConsume());
 }
 
-TEST(TokenBucketTest, RefillsOverTime) {
+TEST(TokenBucketTest, RefillsOverTime)
+{
     TokenBucket bucket(5, 100.0);  // 100 tokens/sec = 1 per 10ms
 
     // Drain the bucket
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5; ++i)
+    {
         bucket.tryConsume();
     }
     EXPECT_FALSE(bucket.tryConsume());
@@ -48,7 +53,8 @@ TEST(TokenBucketTest, RefillsOverTime) {
     EXPECT_TRUE(bucket.tryConsume());
 }
 
-TEST(TokenBucketTest, DoesNotExceedCapacity) {
+TEST(TokenBucketTest, DoesNotExceedCapacity)
+{
     TokenBucket bucket(3, 1000.0);  // Very fast refill
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -58,7 +64,8 @@ TEST(TokenBucketTest, DoesNotExceedCapacity) {
     EXPECT_LE(tokens, 3.0);
 }
 
-TEST(TokenBucketTest, TryConsumeMultiple) {
+TEST(TokenBucketTest, TryConsumeMultiple)
+{
     TokenBucket bucket(10, 1.0);
 
     EXPECT_TRUE(bucket.tryConsume(5));   // 5 left
@@ -66,7 +73,8 @@ TEST(TokenBucketTest, TryConsumeMultiple) {
     EXPECT_FALSE(bucket.tryConsume(1));  // Empty
 }
 
-TEST(TokenBucketTest, TryConsumeMoreThanAvailable) {
+TEST(TokenBucketTest, TryConsumeMoreThanAvailable)
+{
     TokenBucket bucket(5, 1.0);
 
     EXPECT_FALSE(bucket.tryConsume(6));  // Can't consume more than available
@@ -74,7 +82,8 @@ TEST(TokenBucketTest, TryConsumeMoreThanAvailable) {
     EXPECT_TRUE(bucket.tryConsume(5));
 }
 
-TEST(TokenBucketTest, StatsTracking) {
+TEST(TokenBucketTest, StatsTracking)
+{
     TokenBucket bucket(3, 1.0);
 
     bucket.tryConsume();  // allowed
@@ -87,13 +96,15 @@ TEST(TokenBucketTest, StatsTracking) {
     EXPECT_EQ(bucket.throttled(), 2u);
 }
 
-TEST(TokenBucketTest, CapacityAndRefillRate) {
+TEST(TokenBucketTest, CapacityAndRefillRate)
+{
     TokenBucket bucket(42, 3.14);
     EXPECT_EQ(bucket.capacity(), 42u);
     EXPECT_DOUBLE_EQ(bucket.refillRate(), 3.14);
 }
 
-TEST(TokenBucketTest, RejectsInvalidConfiguration) {
+TEST(TokenBucketTest, RejectsInvalidConfiguration)
+{
     EXPECT_THROW(TokenBucket(0, 1.0), std::invalid_argument);
     EXPECT_THROW(TokenBucket(10, -1.0), std::invalid_argument);
 }

@@ -34,17 +34,21 @@
 #include <string>
 #include <vector>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Operation type for a WAL entry.
-enum class WalOperation : uint8_t {
+enum class WalOperation : uint8_t
+{
     PUT = 0x01,
     DELETE = 0x02,
 };
 
 /// @brief A single logged mutation.
-struct WalEntry {
+struct WalEntry
+{
     WalOperation operation = WalOperation::PUT;
     std::string key;
     std::string value;            ///< Empty for DELETE.
@@ -54,14 +58,16 @@ struct WalEntry {
 };
 
 /// @brief What recovery found when the log was opened.
-struct WalRecoveryReport {
+struct WalRecoveryReport
+{
     std::size_t validRecords = 0;    ///< Records kept.
     std::size_t skippedBytes = 0;    ///< Damaged bytes between valid records (ignored on replay).
     std::size_t truncatedBytes = 0;  ///< Invalid tail bytes removed from the end of the file.
 };
 
 /// @brief Append-only write-ahead log with per-record checksums and tail recovery.
-class WriteAheadLog {
+class WriteAheadLog
+{
 public:
     /// @param filePath     Log file; created when missing, recovered when present.
     /// @param syncOnAppend fsync after every append (durable across power loss) when true.
@@ -116,13 +122,15 @@ public:
 
 private:
     /// @brief Closes a FILE handle owned by a std::unique_ptr.
-    struct FileCloser {
+    struct FileCloser
+    {
         void operator()(std::FILE* file) const;
     };
     using FileHandle = std::unique_ptr<std::FILE, FileCloser>;
 
     /// @brief Result of parsing a log image.
-    struct ScanResult {
+    struct ScanResult
+    {
         std::vector<WalEntry> entries;
         std::size_t validEnd = 0;      ///< Offset just after the last valid record.
         std::size_t skippedBytes = 0;  ///< Damaged bytes between valid records.

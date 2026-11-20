@@ -27,6 +27,8 @@
 /// drains the queue: each write is sent in order with its original version, and only the prefix
 /// write-api resolved is removed from the WAL, so writes queued during a drain are never lost.
 
+#include <httplib.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -39,41 +41,43 @@
 #include <thread>
 #include <unordered_map>
 
-#include <httplib.h>
-
 #include "common/circuitBreaker.h"
 #include "common/lruCache.h"
 #include "common/tokenBucket.h"
 #include "common/wal.h"
 #include "edge/originClient.h"
 
-namespace outpost {
-namespace edge {
+namespace outpost
+{
+namespace edge
+{
 
 /// @brief Configuration for an edge server instance.
-struct EdgeConfig {
-    std::string nodeId = "edge-1";                          ///< Unique node identifier.
-    std::string bindAddress = "0.0.0.0";                    ///< Listen address.
-    int port = 8081;                                        ///< Listen port; 0 picks a free port.
-    std::string writeApiHost = "write-api";                 ///< Write-API hostname.
-    int writeApiPort = 9090;                                ///< Write-API port.
-    std::size_t cacheCapacity = 1024;                       ///< LRU cache max entries.
-    std::chrono::milliseconds cacheTtl{60000};              ///< Entry freshness; 0 = forever.
-    double rateLimitPerSec = 100.0;                         ///< Token refill per client per s.
-    std::size_t rateLimitBurst = 200;                       ///< Token bucket capacity per client.
-    std::size_t maxTrackedClients = 10000;                  ///< Buckets kept before idle eviction.
-    int breakerFailureThreshold = 3;                        ///< Failures that open the breaker.
-    std::chrono::milliseconds breakerResetTimeout{5000};    ///< OPEN time before a probe.
-    std::chrono::milliseconds healthCheckInterval{1000};    ///< Time between health checks.
-    std::chrono::milliseconds originTimeout{2000};          ///< Timeout for write-api calls.
-    std::string walPath;  ///< Queue WAL; empty means /data/<nodeId>_write_queue.wal.
-    bool walFsync = true;                                   ///< fsync each queued write.
+struct EdgeConfig
+{
+    std::string nodeId = "edge-1";                        ///< Unique node identifier.
+    std::string bindAddress = "0.0.0.0";                  ///< Listen address.
+    int port = 8081;                                      ///< Listen port; 0 picks a free port.
+    std::string writeApiHost = "write-api";               ///< Write-API hostname.
+    int writeApiPort = 9090;                              ///< Write-API port.
+    std::size_t cacheCapacity = 1024;                     ///< LRU cache max entries.
+    std::chrono::milliseconds cacheTtl{60000};            ///< Entry freshness; 0 = forever.
+    double rateLimitPerSec = 100.0;                       ///< Token refill per client per s.
+    std::size_t rateLimitBurst = 200;                     ///< Token bucket capacity per client.
+    std::size_t maxTrackedClients = 10000;                ///< Buckets kept before idle eviction.
+    int breakerFailureThreshold = 3;                      ///< Failures that open the breaker.
+    std::chrono::milliseconds breakerResetTimeout{5000};  ///< OPEN time before a probe.
+    std::chrono::milliseconds healthCheckInterval{1000};  ///< Time between health checks.
+    std::chrono::milliseconds originTimeout{2000};        ///< Timeout for write-api calls.
+    std::string walPath;   ///< Queue WAL; empty means /data/<nodeId>_write_queue.wal.
+    bool walFsync = true;  ///< fsync each queued write.
 };
 
 /// @brief Edge server that handles HTTP requests with cache-aside logic.
 ///
 /// Lifecycle: bind() then serve() (blocking) on one thread; stop() from any thread.
-class EdgeServer {
+class EdgeServer
+{
 public:
     /// @throws std::invalid_argument when maxTrackedClients or rateLimitBurst is 0, or
     ///         rateLimitPerSec is negative.
@@ -108,18 +112,21 @@ private:
     /// @brief Count a 429 for clientId; emits at most one rateLimit event per second.
     void recordRateLimit(const std::string& clientId);
 
-    struct ClientBucket {
+    struct ClientBucket
+    {
         std::shared_ptr<common::TokenBucket> bucket;
         std::chrono::steady_clock::time_point lastSeen;
     };
 
-    struct Event {
+    struct Event
+    {
         int64_t atMs;  ///< Milliseconds since the Unix epoch.
         std::string type;
         std::string message;
     };
 
-    struct Transition {
+    struct Transition
+    {
         int64_t atMs;  ///< Milliseconds since the Unix epoch.
         std::string from;
         std::string to;

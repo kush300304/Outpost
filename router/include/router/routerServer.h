@@ -21,6 +21,8 @@
 /// refuses a connection, the request path removes it at once and retries once on the new owner.
 /// Nothing is persisted: a restarted router derives the same ring from its configuration.
 
+#include <httplib.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -33,22 +35,24 @@
 #include <thread>
 #include <vector>
 
-#include <httplib.h>
-
 #include "common/consistentHash.h"
 
-namespace outpost {
-namespace router {
+namespace outpost
+{
+namespace router
+{
 
 /// @brief One edge the router can forward to.
-struct EdgeNode {
+struct EdgeNode
+{
     std::string id;    ///< Node id, also its identity on the hash ring.
     std::string host;  ///< Hostname or address.
     int port = 0;      ///< HTTP port.
 };
 
 /// @brief Configuration for a router instance.
-struct RouterConfig {
+struct RouterConfig
+{
     std::string bindAddress = "0.0.0.0";                  ///< Listen address.
     int port = 8080;                                      ///< Listen port; 0 picks a free port.
     std::vector<EdgeNode> edges;                          ///< Edges to route to (at least one).
@@ -61,7 +65,8 @@ struct RouterConfig {
 /// @brief Consistent-hash router.
 ///
 /// Lifecycle: bind(), then serve() (blocking); stop() from any thread.
-class RouterServer {
+class RouterServer
+{
 public:
     /// @throws std::invalid_argument when no edge is configured, an id repeats, or
     ///         unhealthyThreshold < 1.
@@ -82,7 +87,8 @@ public:
 
 private:
     /// @brief Health and routing counters of one configured edge.
-    struct EdgeStatus {
+    struct EdgeStatus
+    {
         EdgeNode node;
         std::atomic<int> consecutiveFailures{0};
         std::atomic<uint64_t> routed{0};

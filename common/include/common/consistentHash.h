@@ -25,11 +25,14 @@
 #include <utility>
 #include <vector>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Consistent hashing ring with configurable virtual nodes per physical node.
-class ConsistentHashRing {
+class ConsistentHashRing
+{
 public:
     /// @param virtualNodesPerNode Ring points per physical node (must be > 0).
     explicit ConsistentHashRing(std::size_t virtualNodesPerNode = 150);

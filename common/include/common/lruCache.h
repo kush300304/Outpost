@@ -26,30 +26,36 @@
 #include <string>
 #include <unordered_map>
 
-namespace outpost {
-namespace common {
+namespace outpost
+{
+namespace common
+{
 
 /// @brief Fixed-capacity LRU cache with freshness and version-aware puts.
-class LruCache {
+class LruCache
+{
 public:
     using Key = std::string;
     using Value = std::string;
 
     /// @brief A cached value and whether it is still within its ttl.
-    struct Lookup {
+    struct Lookup
+    {
         Value value;
         bool fresh = true;
     };
 
     /// @brief Hit/miss/eviction counters.
-    struct Stats {
+    struct Stats
+    {
         uint64_t hits = 0;       ///< Lookups that found a fresh entry.
         uint64_t misses = 0;     ///< Lookups that found nothing or an expired entry.
         uint64_t evictions = 0;  ///< Entries evicted to make room.
         uint64_t puts = 0;       ///< put() calls, including ignored ones.
 
         /// @brief Hit rate as a percentage (0.0–100.0); 0.0 before the first lookup.
-        double hitRate() const {
+        double hitRate() const
+        {
             uint64_t total = hits + misses;
             return total > 0 ? (static_cast<double>(hits) / static_cast<double>(total)) * 100.0
                              : 0.0;
@@ -90,10 +96,16 @@ public:
     std::size_t size() const;
 
     /// @brief Maximum number of entries.
-    std::size_t capacity() const { return capacity_; }
+    std::size_t capacity() const
+    {
+        return capacity_;
+    }
 
     /// @brief Freshness lifetime of an entry; zero means entries never expire.
-    std::chrono::milliseconds ttl() const { return ttl_; }
+    std::chrono::milliseconds ttl() const
+    {
+        return ttl_;
+    }
 
     /// @brief Snapshot of the counters.
     Stats stats() const;
@@ -107,7 +119,8 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
-    struct Entry {
+    struct Entry
+    {
         Key key;
         Value value;
         uint64_t version = 0;
