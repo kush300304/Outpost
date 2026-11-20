@@ -552,18 +552,20 @@ TEST_F(EdgeServerTest, ConcurrentRequestsThroughTheEdgeAreRaceFree) {
     EdgeConfig cfg = config(origin.port());
     cfg.cacheTtl = 0ms;
     RunningEdge edge(cfg);
+    std::atomic<int> unanswered{0};
     std::vector<std::thread> clients;
     for (int t = 0; t < 8; ++t) {
-        clients.emplace_back([&edge, t] {
+        clients.emplace_back([&edge, &unanswered, t] {
             for (int i = 0; i < 25; ++i) {
                 std::string key = "c" + std::to_string(t) + "_" + std::to_string(i);
-                edge.client().Get("/key/" + key);
-                edge.client().Put("/key/" + key, "v", "text/plain");
+                unanswered += edge.client().Get("/key/" + key) ? 0 : 1;
+                unanswered += edge.client().Put("/key/" + key, "v", "text/plain") ? 0 : 1;
             }
         });
     }
     for (auto& client : clients) {
         client.join();
     }
+    EXPECT_EQ(unanswered.load(), 0);
     EXPECT_EQ(edge.stats()["requests"]["total"], 400);
 }

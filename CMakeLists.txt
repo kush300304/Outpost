@@ -10,6 +10,11 @@ option(BUILD_TESTING "Build the test suite" ON)
 
 include(FetchContent)
 
+# cpp-httplib listens with a backlog of 5 by default; under concurrent connects the kernel drops
+# SYNs beyond it and clients wait for a 1 s retransmit. Every target that includes httplib.h must
+# see the same value, so it is set once for the whole build.
+add_compile_definitions(CPPHTTPLIB_LISTEN_BACKLOG=1024)
+
 # cpp-httplib (HTTP client and server)
 find_package(httplib QUIET)
 if(NOT httplib_FOUND)
