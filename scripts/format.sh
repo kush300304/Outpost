@@ -16,8 +16,9 @@ IMAGE="outpost-clang-format:18"
 mode="${1:-}"
 
 cd "$ROOT"
-mapfile -t files < <(git ls-files 'common/*.h' 'common/*.cpp' 'edge/*.h' 'edge/*.cpp' \
-    'router/*.h' 'router/*.cpp' 'storage/*.h' 'storage/*.cpp' 'write-api/*.h' 'write-api/*.cpp')
+mapfile -t files < <(git ls-files --cached --others --exclude-standard \
+    'common/*.h' 'common/*.cpp' 'edge/*.h' 'edge/*.cpp' 'router/*.h' 'router/*.cpp' \
+    'storage/*.h' 'storage/*.cpp' 'write-api/*.h' 'write-api/*.cpp' | sort -u)
 
 if command -v clang-format-18 >/dev/null 2>&1; then
     runFormat() { clang-format-18 "$@"; }
@@ -32,7 +33,8 @@ fi
 if [[ "$mode" == "--check" ]]; then
     report="$(mktemp)"
     trap 'rm -f "$report"' EXIT
-    runFormat --dry-run --Werror "${files[@]}" 2>&1 | grep -oE '^[^:]+\.(h|cpp)' | sort -u >"$report" || true
+    runFormat --dry-run --Werror "${files[@]}" 2>&1 | sed -nE 's/^([^:]+\.(h|cpp)):[0-9]+:[0-9]+: (error|warning):.*/\1/p' |
+        sort -u >"$report" || true
     if [[ -s "$report" ]]; then
         echo "clang-format: these files need formatting (run scripts/format.sh):"
         cat "$report"

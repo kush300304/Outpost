@@ -1,15 +1,14 @@
 /// @file testShutdownSignal.cpp
 /// @brief Unit tests for outpost::common::ShutdownSignal.
 
-#include "common/shutdownSignal.h"
-
+#include <gtest/gtest.h>
 #include <signal.h>
 #include <unistd.h>
 
 #include <chrono>
 #include <future>
 
-#include <gtest/gtest.h>
+#include "common/shutdownSignal.h"
 
 using outpost::common::ShutdownSignal;
 
