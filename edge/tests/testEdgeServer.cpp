@@ -717,3 +717,26 @@ TEST_F(EdgeServerTest, StatsMatchTheDocumentedSchema)
     EXPECT_EQ(eventTypes, (std::set<std::string>{"breaker", "reconcile", "rateLimit"}));
     EXPECT_FALSE(stats["circuitBreaker"]["recentTransitions"].empty());
 }
+
+TEST_F(EdgeServerTest, KeepAliveRequestsAreNotDelayedByNagle)
+{
+    FakeOrigin origin;
+    RunningEdge edge(config(origin.port()));
+    auto put = edge.client().Put("/key/k", "v", "text/plain");
+    ASSERT_TRUE(put);
+    httplib::Client keepAlive = edge.client();
+    keepAlive.set_keep_alive(true);
+    auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10; ++i)
+    {
+        auto res = keepAlive.Get("/key/k");
+        ASSERT_TRUE(res);
+        ASSERT_EQ(res->status, 200);
+    }
+    // Ten requests on one connection take a few milliseconds; with Nagle's algorithm interacting
+    // with delayed ACKs each one after the first stalls for ~40 ms.
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+    EXPECT_LT(elapsedMs, 150) << "10 keep-alive requests took " << elapsedMs << " ms";
+}

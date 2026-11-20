@@ -25,6 +25,9 @@ include(FetchContent)
 # SYNs beyond it and clients wait for a 1 s retransmit. Every target that includes httplib.h must
 # see the same value, so it is set once for the whole build.
 add_compile_definitions(CPPHTTPLIB_LISTEN_BACKLOG=1024)
+# cpp-httplib leaves Nagle's algorithm on; on a keep-alive connection a response written in two
+# parts then waits for the peer's delayed ACK (~40 ms per request). Disable it everywhere.
+add_compile_definitions(CPPHTTPLIB_TCP_NODELAY=true)
 
 # cpp-httplib (HTTP client and server)
 find_package(httplib QUIET)
