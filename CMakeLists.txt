@@ -28,6 +28,9 @@ add_compile_definitions(CPPHTTPLIB_LISTEN_BACKLOG=1024)
 # cpp-httplib leaves Nagle's algorithm on; on a keep-alive connection a response written in two
 # parts then waits for the peer's delayed ACK (~40 ms per request). Disable it everywhere.
 add_compile_definitions(CPPHTTPLIB_TCP_NODELAY=true)
+# A keep-alive connection holds one server worker until it closes or idles out (5 s), so the
+# default pool (CPU count - 1) starved new clients once that many connections were open.
+add_compile_definitions(CPPHTTPLIB_THREAD_POOL_COUNT=64)
 
 # cpp-httplib (HTTP client and server)
 find_package(httplib QUIET)
