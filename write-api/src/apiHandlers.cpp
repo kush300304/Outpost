@@ -6,6 +6,7 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -23,26 +24,42 @@ static std::atomic<uint64_t> s_totalGets{0};
 static std::atomic<uint64_t> s_totalPuts{0};
 static std::atomic<uint64_t> s_totalErrors{0};
 
-void registerHandlers(httplib::Server& server, StorageClient& client)
+void registerHandlers(httplib::Server& server, StorageClient& client, const HandlerOptions& options)
 {
+    // Simulated outage switch, owned by this registration's handlers.
+    auto outage = std::make_shared<std::atomic<bool>>(false);
+    const std::string simulatedBody =
+        json({{"error", "simulated_outage"}, {"message", "write-api is in a simulated outage"}})
+            .dump();
+
     // ── Health: healthy only when storage answers /health within 1 s ────
-    server.Get("/health", [&client](const httplib::Request& /*req*/, httplib::Response& res) {
-        bool storageUp = client.isHealthy();
-        res.status = storageUp ? 200 : 503;
-        json body = {{"status", storageUp ? "healthy" : "unhealthy"},
-                     {"service", "write-api"},
-                     {"storage", storageUp ? "up" : "down"}};
-        res.set_content(body.dump(), "application/json");
-    });
+    server.Get("/health",
+               [&client, outage](const httplib::Request& /*req*/, httplib::Response& res) {
+                   bool simulated = outage->load();
+                   bool storageUp = !simulated && client.isHealthy();
+                   res.status = storageUp ? 200 : 503;
+                   json body = {{"status", storageUp ? "healthy" : "unhealthy"},
+                                {"service", "write-api"},
+                                {"storage", storageUp ? "up" : "down"},
+                                {"simulated", simulated}};
+                   res.set_content(body.dump(), "application/json");
+               });
 
     // ── GET /key/:id — proxy read to storage ────────────────────────────
-    server.Get(R"(/key/(.+))", [&client](const httplib::Request& req, httplib::Response& res) {
+    server.Get(R"(/key/(.+))", [&client, outage, simulatedBody](const httplib::Request& req,
+                                                                httplib::Response& res) {
         std::string key = req.matches[1].str();
         s_totalGets.fetch_add(1, std::memory_order_relaxed);
 
-        StorageResponse storageRes = client.get(key);
+        bool simulated = outage->load();
+        StorageResponse storageRes = simulated ? StorageResponse() : client.get(key);
         std::string content = storageRes.body;
-        if (storageRes.httpStatus == 404)
+        if (simulated)
+        {
+            res.status = 503;
+            content = simulatedBody;
+        }
+        else if (storageRes.httpStatus == 404)
         {
             res.status = 404;
             content = json({{"error", "not_found"}, {"key", key}}).dump();
@@ -62,7 +79,8 @@ void registerHandlers(httplib::Server& server, StorageClient& client)
     });
 
     // ── PUT /key/:id — validate then proxy the versioned write to storage ─
-    server.Put(R"(/key/(.+))", [&client](const httplib::Request& req, httplib::Response& res) {
+    server.Put(R"(/key/(.+))", [&client, outage, simulatedBody](const httplib::Request& req,
+                                                                httplib::Response& res) {
         std::string key = req.matches[1].str();
         s_totalPuts.fetch_add(1, std::memory_order_relaxed);
         json request = json::parse(req.body, nullptr, false);
@@ -93,7 +111,12 @@ void registerHandlers(httplib::Server& server, StorageClient& client)
         }
 
         std::string content;
-        if (!error.empty())
+        if (outage->load())
+        {
+            res.status = 503;
+            content = simulatedBody;
+        }
+        else if (!error.empty())
         {
             res.status = 400;
             content = json({{"error", "bad_request"}, {"message", error}}).dump();
@@ -129,7 +152,38 @@ void registerHandlers(httplib::Server& server, StorageClient& client)
         res.set_content(body.dump(), "application/json");
     });
 
-    spdlog::info("Write-API handlers registered: /health, /key/:id (GET/PUT), /debug/stats");
+    if (options.adminEnabled)
+    {
+        server.Get("/admin/outage",
+                   [&client, outage](const httplib::Request& /*req*/, httplib::Response& res) {
+                       json body = {{"simulatedOutage", outage->load()},
+                                    {"storageHealthy", client.isHealthy()}};
+                       res.set_content(body.dump(), "application/json");
+                   });
+        server.Post("/admin/outage", [&client, outage](const httplib::Request& req,
+                                                       httplib::Response& res) {
+            json request = json::parse(req.body, nullptr, false);
+            bool valid = request.is_object() && request.contains("enabled") &&
+                         request["enabled"].is_boolean();
+            json body;
+            if (valid)
+            {
+                outage->store(request["enabled"].get<bool>());
+                spdlog::warn("Simulated outage {}", outage->load() ? "ON" : "OFF");
+                body = {{"simulatedOutage", outage->load()},
+                        {"storageHealthy", client.isHealthy()}};
+            }
+            else
+            {
+                res.status = 400;
+                body = {{"error", "bad_request"}, {"message", "body must be {\"enabled\":bool}"}};
+            }
+            res.set_content(body.dump(), "application/json");
+        });
+    }
+
+    spdlog::info("Write-API handlers registered: /health, /key/:id (GET/PUT), /debug/stats{}",
+                 options.adminEnabled ? ", /admin/outage" : "");
 }
 
 }  // namespace writeApi

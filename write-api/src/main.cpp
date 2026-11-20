@@ -7,6 +7,7 @@
 ///   PORT          listen port (default 9090)
 ///   STORAGE_HOST  storage service hostname (default "storage")
 ///   STORAGE_PORT  storage service port (default 9091)
+///   ADMIN_ENABLED "1" registers the simulated-outage admin endpoint (default "0")
 
 #include <httplib.h>
 #include <spdlog/spdlog.h>
@@ -33,7 +34,9 @@ int main()
 
     outpost::writeApi::StorageClient storageClient(storageHost, storagePort);
     httplib::Server server;
-    outpost::writeApi::registerHandlers(server, storageClient);
+    outpost::writeApi::HandlerOptions options;
+    options.adminEnabled = env("ADMIN_ENABLED", "0") == "1";
+    outpost::writeApi::registerHandlers(server, storageClient, options);
     outpost::common::ShutdownSignal shutdown([&server] {
         spdlog::info("Shutdown signal received, stopping");
         server.stop();
