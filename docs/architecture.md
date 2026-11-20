@@ -104,6 +104,8 @@ Every configured edge (`EDGE_NODES`) starts on the ring. The router health-check
   next owner.
 - One success brings it back.
 - A refused connection removes the owner immediately, and the request is retried once on the new owner.
+- Name lookups are bounded to one 1 s attempt, because Docker's DNS can take seconds to fail for a stopped
+  container. The first request for a dead edge's key therefore fails over within about 1 s.
 
 The router keeps no state. A restart rebuilds the same ring, because ring ownership doesn't depend on the order
 in which nodes were added. Adding a fourth edge means a new `EDGE_NODES` entry and a router restart, and moves
