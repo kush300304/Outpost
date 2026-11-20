@@ -8,6 +8,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Enable testing by default
 option(BUILD_TESTING "Build the test suite" ON)
 
+# Sanitizer builds: -DOUTPOST_SANITIZE=address,undefined or -DOUTPOST_SANITIZE=thread.
+# Applied to every target (dependencies included) so instrumented and plain code never mix.
+set(OUTPOST_SANITIZE "" CACHE STRING "Sanitizers to enable: address,undefined | thread | empty")
+if(OUTPOST_SANITIZE)
+    add_compile_options(-fsanitize=${OUTPOST_SANITIZE} -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=${OUTPOST_SANITIZE})
+    if(OUTPOST_SANITIZE MATCHES "undefined")
+        add_compile_options(-fno-sanitize-recover=undefined)
+    endif()
+endif()
+
 include(FetchContent)
 
 # cpp-httplib listens with a backlog of 5 by default; under concurrent connects the kernel drops
