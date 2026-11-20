@@ -491,3 +491,21 @@ TEST(WalTest, SequenceKeepsIncreasingAfterTruncate)
     wal.truncate();
     EXPECT_EQ(wal.appendPut("c", "3"), 3u);
 }
+
+TEST(WalTest, RecoveredEntriesMatchTheLogAndAreTakenOnce)
+{
+    TempWalFile tmp;
+    {
+        WriteAheadLog wal(tmp.path());
+        wal.appendPut("a", "1");
+        wal.appendPut("b", "2");
+    }
+    WriteAheadLog wal(tmp.path());
+    auto recovered = wal.takeRecoveredEntries();
+    auto replayed = wal.replay();
+    ASSERT_EQ(recovered.size(), 2u);
+    ASSERT_EQ(replayed.size(), 2u);
+    EXPECT_EQ(recovered[1].key, replayed[1].key);
+    EXPECT_EQ(recovered[1].sequenceNumber, replayed[1].sequenceNumber);
+    EXPECT_TRUE(wal.takeRecoveredEntries().empty());
+}

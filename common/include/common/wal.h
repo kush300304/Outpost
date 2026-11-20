@@ -92,6 +92,12 @@ public:
     /// @brief Return every valid entry currently in the log, in append order.
     std::vector<WalEntry> replay() const;
 
+    /// @brief The entries recovery found when this instance opened the file, without re-reading it.
+    ///
+    /// Moves the entries out: the first call returns them, later calls return an empty vector.
+    /// Lets a consumer rebuild its state at start-up from the single recovery scan.
+    std::vector<WalEntry> takeRecoveredEntries();
+
     /// @brief Atomically remove every entry with sequenceNumber <= the given value.
     ///
     /// Entries appended after a replay() snapshot keep their place, so a consumer can drain a
@@ -150,6 +156,7 @@ private:
     uint64_t sequenceCounter_ = 0;
     uint64_t entriesAppended_ = 0;
     WalRecoveryReport recovery_;
+    std::vector<WalEntry> recoveredEntries_;  ///< Held until takeRecoveredEntries().
 };
 
 }  // namespace common

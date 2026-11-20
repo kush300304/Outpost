@@ -56,7 +56,7 @@ KvStore::KvStore() = default;
 KvStore::KvStore(const std::string& walFilePath, bool syncOnAppend)
     : wal_(std::make_unique<common::WriteAheadLog>(walFilePath, syncOnAppend))
 {
-    for (common::WalEntry& entry : wal_->replay())
+    for (common::WalEntry& entry : wal_->takeRecoveredEntries())
     {
         auto it = data_.find(entry.key);
         const VersionedValue* stored = it == data_.end() ? nullptr : &it->second;

@@ -13,6 +13,7 @@
 #include <iterator>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace outpost
 {
@@ -226,6 +227,7 @@ WriteAheadLog::WriteAheadLog(const std::string& filePath, bool syncOnAppend)
     }
     recordCount_ = scan.entries.size();
     fileSize_ = scan.validEnd;
+    recoveredEntries_ = std::move(scan.entries);
     file_ = openForAppend(filePath_);
 }
 
@@ -273,6 +275,14 @@ std::vector<WalEntry> WriteAheadLog::replay() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<WalEntry> entries = scanRecords(readFile(filePath_)).entries;
+    return entries;
+}
+
+std::vector<WalEntry> WriteAheadLog::takeRecoveredEntries()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<WalEntry> entries = std::move(recoveredEntries_);
+    recoveredEntries_.clear();
     return entries;
 }
 
