@@ -3,10 +3,9 @@
 
 #include "common/consistentHash.h"
 
-#include <cmath>
-#include <set>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -41,64 +40,70 @@ TEST(ConsistentHashTest, SameKeyAlwaysMapsToSameNode) {
     }
 }
 
-TEST(ConsistentHashTest, KeysDistributeAcrossNodes) {
+TEST(ConsistentHashTest, KeysDistributeEvenlyAcrossNodes) {
     ConsistentHashRing ring(150);
     ring.addNode("edge-1");
     ring.addNode("edge-2");
     ring.addNode("edge-3");
 
     std::unordered_map<std::string, int> distribution;
-    constexpr int kNumKeys = 10000;
-
+    constexpr int kNumKeys = 100000;
     for (int i = 0; i < kNumKeys; ++i) {
-        std::string node = ring.getNode("key_" + std::to_string(i));
-        ++distribution[node];
+        ++distribution[ring.getNode("key_" + std::to_string(i))];
     }
 
-    // All 3 nodes should get some keys
-    EXPECT_EQ(distribution.size(), 3u);
+    ASSERT_EQ(distribution.size(), 3u);
     for (auto& [node, count] : distribution) {
-        // Each node should get roughly 1/3 of keys.
-        // With 150 virtual nodes, expect decent uniformity.
-        // Allow wide range: between 15% and 50% of total.
+        // Each node owns 1/3 of the keys within ±20 % (26.7 %–40 %).
         double pct = (static_cast<double>(count) / kNumKeys) * 100.0;
-        EXPECT_GT(pct, 15.0) << node << " got too few keys: " << count;
-        EXPECT_LT(pct, 50.0) << node << " got too many keys: " << count;
+        EXPECT_GT(pct, 26.7) << node << " got too few keys: " << count;
+        EXPECT_LT(pct, 40.0) << node << " got too many keys: " << count;
     }
 }
 
-TEST(ConsistentHashTest, AddNodeRemapsApproximatelyOneNthOfKeys) {
-    ConsistentHashRing ring(150);
-    ring.addNode("edge-1");
-    ring.addNode("edge-2");
-    ring.addNode("edge-3");
-
-    constexpr int kNumKeys = 10000;
-
-    // Record mapping before adding a 4th node
-    std::unordered_map<std::string, std::string> before;
-    for (int i = 0; i < kNumKeys; ++i) {
-        std::string key = "key_" + std::to_string(i);
-        before[key] = ring.getNode(key);
-    }
-
-    // Add a 4th node
-    ring.addNode("edge-4");
-
-    int remapped = 0;
-    for (int i = 0; i < kNumKeys; ++i) {
-        std::string key = "key_" + std::to_string(i);
-        std::string after = ring.getNode(key);
-        if (after != before[key]) {
-            ++remapped;
+TEST(ConsistentHashTest, AddingANodeMovesAboutOneOverNPlusOneOfKeys) {
+    constexpr int kNumKeys = 100000;
+    for (int existing = 3; existing <= 5; ++existing) {
+        ConsistentHashRing ring(150);
+        for (int n = 1; n <= existing; ++n) {
+            ring.addNode("edge-" + std::to_string(n));
         }
-    }
+        std::vector<std::string> before(kNumKeys);
+        for (int i = 0; i < kNumKeys; ++i) {
+            before[i] = ring.getNode("key_" + std::to_string(i));
+        }
 
-    // With 4 nodes, ~1/4 of keys should remap (25%).
-    // Allow range: 10% to 45% to account for variance.
-    double remapPct = (static_cast<double>(remapped) / kNumKeys) * 100.0;
-    EXPECT_GT(remapPct, 10.0) << "Too few keys remapped: " << remapped;
-    EXPECT_LT(remapPct, 45.0) << "Too many keys remapped: " << remapped;
+        std::string added = "edge-" + std::to_string(existing + 1);
+        ring.addNode(added);
+        int moved = 0;
+        int movedBetweenOldNodes = 0;
+        for (int i = 0; i < kNumKeys; ++i) {
+            std::string after = ring.getNode("key_" + std::to_string(i));
+            moved += after != before[i] ? 1 : 0;
+            movedBetweenOldNodes += (after != before[i] && after != added) ? 1 : 0;
+        }
+
+        double ideal = 1.0 / (existing + 1);
+        double fraction = static_cast<double>(moved) / kNumKeys;
+        EXPECT_GT(fraction, 0.5 * ideal) << existing << " -> " << existing + 1;
+        EXPECT_LT(fraction, 1.5 * ideal) << existing << " -> " << existing + 1;
+        EXPECT_EQ(movedBetweenOldNodes, 0) << existing << " -> " << existing + 1;
+    }
+}
+
+TEST(ConsistentHashTest, RoutingDoesNotDependOnInsertionOrder) {
+    ConsistentHashRing forward(150);
+    ConsistentHashRing backward(150);
+    for (int n = 1; n <= 5; ++n) {
+        forward.addNode("edge-" + std::to_string(n));
+        backward.addNode("edge-" + std::to_string(6 - n));
+    }
+    forward.removeNode("edge-3");
+    backward.removeNode("edge-3");
+    for (int i = 0; i < 10000; ++i) {
+        std::string key = "key_" + std::to_string(i);
+        ASSERT_EQ(forward.getNode(key), backward.getNode(key)) << key;
+    }
 }
 
 TEST(ConsistentHashTest, RemoveNodeRemapsOnlyItsKeys) {

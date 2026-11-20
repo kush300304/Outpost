@@ -13,6 +13,9 @@
 ///   BREAKER_RESET_TIMEOUT_MS   OPEN time before the half-open probe (default 5000)
 ///   HEALTH_CHECK_INTERVAL_MS   time between write-api health checks (default 1000)
 ///   ORIGIN_TIMEOUT_MS          connect/read timeout for write-api calls (default 2000)
+///   RATE_LIMIT_PER_SEC         token refill per client per second (default 100)
+///   RATE_LIMIT_BURST           token bucket capacity per client (default 200)
+///   MAX_TRACKED_CLIENTS        client buckets kept before eviction (default 10000)
 
 #include <chrono>
 #include <cstdlib>
@@ -45,6 +48,9 @@ int main() {
     config.healthCheckInterval =
         std::chrono::milliseconds(std::stol(env("HEALTH_CHECK_INTERVAL_MS", "1000")));
     config.originTimeout = std::chrono::milliseconds(std::stol(env("ORIGIN_TIMEOUT_MS", "2000")));
+    config.rateLimitPerSec = std::stod(env("RATE_LIMIT_PER_SEC", "100"));
+    config.rateLimitBurst = std::stoul(env("RATE_LIMIT_BURST", "200"));
+    config.maxTrackedClients = std::stoul(env("MAX_TRACKED_CLIENTS", "10000"));
 
     outpost::edge::EdgeServer server(config);
     bool served = server.bind() > 0 && server.serve();

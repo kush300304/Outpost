@@ -1,44 +1,24 @@
 /// @file testApiHandlers.cpp
-/// @brief Unit tests for write-api request handlers.
+/// @brief Tests for the write-api HTTP handlers.
 ///
-/// These test the validation logic in isolation. Full integration tests
-/// (write-api → storage) require the Docker cluster.
+/// Every test runs the real write-api handlers on an ephemeral port, in front of either real
+/// in-process storage handlers or an unreachable storage port, and talks to them over HTTP.
 
-#include <gtest/gtest.h>
-
-// Validation logic tests — these don't need a running server.
-
-TEST(ApiHandlersTest, KeyLengthValidation) {
-    // Keys up to 256 bytes are valid
-    std::string validKey(256, 'k');
-    EXPECT_LE(validKey.size(), 256u);
-
-    // Keys over 256 bytes are rejected
-    std::string invalidKey(257, 'k');
-    EXPECT_GT(invalidKey.size(), 256u);
-}
-
-TEST(ApiHandlersTest, ValueSizeValidation) {
-    // Values up to 1MB are valid
-    std::string validValue(1024 * 1024, 'v');
-    EXPECT_LE(validValue.size(), 1024u * 1024u);
-
-    // Values over 1MB are rejected
-    std::string invalidValue(1024 * 1024 + 1, 'v');
-    EXPECT_GT(invalidValue.size(), 1024u * 1024u);
-}
-
-// ── Real handlers against real or unreachable storage ───────────────────
+#include "writeApi/apiHandlers.h"
 
 #include <chrono>
+#include <string>
 #include <thread>
 
+#include <gtest/gtest.h>
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 
 #include "storage/kvStore.h"
 #include "storage/storageHandlers.h"
-#include "writeApi/apiHandlers.h"
 #include "writeApi/storageClient.h"
+
+using json = nlohmann::json;
 
 namespace {
 
@@ -82,6 +62,10 @@ public:
         cli.set_read_timeout(std::chrono::seconds(3));
         return cli;
     }
+    int put(const std::string& key, const json& body) const {
+        auto res = client().Put("/key/" + key, body.dump(), "application/json");
+        return res ? res->status : -1;
+    }
     outpost::storage::KvStore store;
 
 private:
@@ -90,7 +74,13 @@ private:
     BackgroundServer api_;
 };
 
+json validWrite(const std::string& value) {
+    return {{"value", value}, {"version", 10}, {"writerId", "edge-1"}};
+}
+
 }  // namespace
+
+// ── Health ──────────────────────────────────────────────────────────────
 
 TEST(WriteApiHealthTest, HealthyWhenStorageAnswers) {
     WriteApiFixture api(true);
@@ -106,6 +96,8 @@ TEST(WriteApiHealthTest, UnhealthyWhenStorageUnreachable) {
     EXPECT_EQ(res->status, 503);
 }
 
+// ── Reads ───────────────────────────────────────────────────────────────
+
 TEST(WriteApiReadTest, MissingKeyIs404) {
     WriteApiFixture api(true);
     auto res = api.client().Get("/key/absent");
@@ -113,9 +105,74 @@ TEST(WriteApiReadTest, MissingKeyIs404) {
     EXPECT_EQ(res->status, 404);
 }
 
+TEST(WriteApiReadTest, StoredKeyIsReturnedWithItsVersion) {
+    WriteApiFixture api(true);
+    api.store.put("k", "v", 7, "edge-3");
+    auto res = api.client().Get("/key/k");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    json body = json::parse(res->body);
+    EXPECT_EQ(body["value"], "v");
+    EXPECT_EQ(body["version"], 7);
+    EXPECT_EQ(body["writerId"], "edge-3");
+}
+
 TEST(WriteApiReadTest, StorageFailureIs502NotNotFound) {
     WriteApiFixture api(false);
     auto res = api.client().Get("/key/anything");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 502);
+}
+
+// ── Write validation ────────────────────────────────────────────────────
+
+TEST(WriteApiValidationTest, KeyAt256BytesIsAcceptedAndAt257Rejected) {
+    WriteApiFixture api(true);
+    EXPECT_EQ(api.put(std::string(256, 'k'), validWrite("v")), 200);
+    EXPECT_EQ(api.put(std::string(257, 'k'), validWrite("v")), 400);
+}
+
+TEST(WriteApiValidationTest, ValueAtOneMebibyteIsAcceptedAndAboveRejected) {
+    WriteApiFixture api(true);
+    EXPECT_EQ(api.put("at-limit", validWrite(std::string(1024 * 1024, 'v'))), 200);
+    EXPECT_EQ(api.put("over-limit", validWrite(std::string(1024 * 1024 + 1, 'v'))), 400);
+    EXPECT_FALSE(api.store.exists("over-limit"));
+}
+
+TEST(WriteApiValidationTest, MissingOrInvalidVersionOrWriterIsRejected) {
+    WriteApiFixture api(true);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"writerId", "edge-1"}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", 0}, {"writerId", "edge-1"}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", -5}, {"writerId", "edge-1"}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", 1}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", 1}, {"writerId", ""}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", 42}, {"version", 1}, {"writerId", "edge-1"}})), 400);
+    EXPECT_FALSE(api.store.exists("k"));
+}
+
+TEST(WriteApiValidationTest, NonJsonBodyIsRejected) {
+    WriteApiFixture api(true);
+    auto res = api.client().Put("/key/k", "plain text", "text/plain");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 400);
+}
+
+// ── Writes ──────────────────────────────────────────────────────────────
+
+TEST(WriteApiWriteTest, ValidWriteIsAppliedThenDuplicateThenSuperseded) {
+    WriteApiFixture api(true);
+    auto first = api.client().Put("/key/k", validWrite("v").dump(), "application/json");
+    auto again = api.client().Put("/key/k", validWrite("v").dump(), "application/json");
+    json older = {{"value", "old"}, {"version", 5}, {"writerId", "edge-2"}};
+    auto stale = api.client().Put("/key/k", older.dump(), "application/json");
+    ASSERT_TRUE(first && again && stale);
+    EXPECT_EQ(json::parse(first->body)["result"], "applied");
+    EXPECT_EQ(json::parse(again->body)["result"], "duplicate");
+    EXPECT_EQ(json::parse(stale->body)["result"], "superseded");
+    EXPECT_EQ(api.store.get("k")->value, "v");
+}
+
+TEST(WriteApiWriteTest, StorageFailureOnWriteIs502) {
+    WriteApiFixture api(false);
+    EXPECT_EQ(api.put("k", validWrite("v")), 502);
 }

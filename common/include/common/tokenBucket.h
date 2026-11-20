@@ -21,8 +21,9 @@ namespace common {
 /// @brief Thread-safe token bucket rate limiter.
 class TokenBucket {
 public:
-    /// @param capacity    Maximum tokens the bucket can hold (burst size).
-    /// @param refillRate  Tokens added per second.
+    /// @param capacity    Maximum tokens the bucket can hold (burst size); must be > 0.
+    /// @param refillRate  Tokens added per second; must be >= 0.
+    /// @throws std::invalid_argument for an invalid capacity or refill rate.
     TokenBucket(std::size_t capacity, double refillRate);
 
     /// @brief Try to consume one token.

@@ -7,6 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "common/urlEncode.h"
+
 using json = nlohmann::json;
 
 namespace outpost {
@@ -20,11 +22,12 @@ OriginClient::OriginClient(const std::string& host, int port, std::chrono::milli
 OriginResponse OriginClient::get(const std::string& key) {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
 
     OriginResponse response;
-    auto res = cli.Get("/key/" + key);
+    auto res = cli.Get("/key/" + common::encodePathSegment(key));
     if (!res) {
         ++failedRequests_;
         response.errorMessage =
@@ -43,11 +46,12 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
                                  uint64_t version, const std::string& writerId) {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
 
     json body = {{"value", value}, {"version", version}, {"writerId", writerId}};
-    auto res = cli.Put("/key/" + key, body.dump(), "application/json");
+    auto res = cli.Put("/key/" + common::encodePathSegment(key), body.dump(), "application/json");
 
     OriginResponse response;
     if (!res) {
@@ -69,6 +73,7 @@ OriginResponse OriginClient::put(const std::string& key, const std::string& valu
 
 bool OriginClient::healthCheck() {
     httplib::Client cli(host_, port_);
+    cli.set_url_encode(false);
     cli.set_connection_timeout(timeout_);
     cli.set_read_timeout(timeout_);
     auto res = cli.Get("/health");

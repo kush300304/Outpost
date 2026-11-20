@@ -120,12 +120,11 @@ TEST(LruCacheTest, ClearResetsEverything) {
     cache.get("a");  // Generate some hits
 
     cache.clear();
-    EXPECT_EQ(cache.size(), 0u);
-    EXPECT_FALSE(cache.get("a").has_value());
-
     auto stats = cache.stats();
     EXPECT_EQ(stats.hits, 0u);
     EXPECT_EQ(stats.misses, 0u);
+    EXPECT_EQ(cache.size(), 0u);
+    EXPECT_FALSE(cache.get("a").has_value());
 }
 
 TEST(LruCacheTest, StatsTracking) {

@@ -18,6 +18,9 @@
 /// fetched from write-api while CLOSED (MISS); with the breaker not CLOSED, or the fetch failing,
 /// the edge answers 503.
 ///
+/// Rate limiting: every /key request consumes a token from its client's bucket (client = first
+/// X-Forwarded-For hop, else the peer address); an empty bucket answers 429 with Retry-After: 1.
+///
 /// Writes are forwarded while CLOSED; otherwise, or when write-api fails, they are queued in the
 /// edge WAL (202). Whenever the breaker is CLOSED and writes are queued, the maintenance thread
 /// drains the queue: each write is sent in order with its original version, and only the prefix
@@ -28,14 +31,17 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 
 #include <httplib.h>
 
 #include "common/circuitBreaker.h"
 #include "common/lruCache.h"
+#include "common/tokenBucket.h"
 #include "common/wal.h"
 #include "edge/originClient.h"
 
@@ -50,6 +56,9 @@ struct EdgeConfig {
     std::string writeApiHost = "write-api";                 ///< Write-API hostname.
     int writeApiPort = 9090;                                ///< Write-API port.
     std::size_t cacheCapacity = 1024;                       ///< LRU cache max entries.
+    double rateLimitPerSec = 100.0;                         ///< Token refill per client per s.
+    std::size_t rateLimitBurst = 200;                       ///< Token bucket capacity per client.
+    std::size_t maxTrackedClients = 10000;                  ///< Buckets kept before idle eviction.
     int breakerFailureThreshold = 3;                        ///< Failures that open the breaker.
     std::chrono::milliseconds breakerResetTimeout{5000};    ///< OPEN time before a probe.
     std::chrono::milliseconds healthCheckInterval{1000};    ///< Time between health checks.
@@ -63,6 +72,8 @@ struct EdgeConfig {
 /// Lifecycle: bind() then serve() (blocking) on one thread; stop() from any thread.
 class EdgeServer {
 public:
+    /// @throws std::invalid_argument when maxTrackedClients or rateLimitBurst is 0, or
+    ///         rateLimitPerSec is negative.
     explicit EdgeServer(const EdgeConfig& config);
     ~EdgeServer();
 
@@ -84,6 +95,15 @@ private:
     /// @brief Maintenance thread body: health checks, breaker state and queue draining.
     void maintenanceLoop();
 
+    /// @brief The token bucket of clientId, created on first use. When maxTrackedClients buckets
+    ///        exist, buckets idle for 60 s are evicted, else the least recently seen one.
+    std::shared_ptr<common::TokenBucket> bucketFor(const std::string& clientId);
+
+    struct ClientBucket {
+        std::shared_ptr<common::TokenBucket> bucket;
+        std::chrono::steady_clock::time_point lastSeen;
+    };
+
     EdgeConfig config_;
     httplib::Server server_;
     OriginClient originClient_;
@@ -93,6 +113,8 @@ private:
 
     std::thread maintenanceThread_;
     std::mutex joinMutex_;  ///< Serializes concurrent stop() calls joining the thread.
+    std::mutex clientsMutex_;
+    std::unordered_map<std::string, ClientBucket> clients_;
     std::mutex stopMutex_;
     std::condition_variable stopSignal_;
     bool stopping_ = false;

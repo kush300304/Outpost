@@ -1,6 +1,10 @@
+/// @file tokenBucket.cpp
+/// @brief Token bucket rate limiter with continuous refill.
+
 #include "common/tokenBucket.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace outpost {
 namespace common {
@@ -10,6 +14,9 @@ TokenBucket::TokenBucket(std::size_t capacity, double refillRate)
       refillRate_(refillRate),
       tokens_(static_cast<double>(capacity)),  // Start full
       lastRefill_(std::chrono::steady_clock::now()) {
+    if (capacity == 0 || refillRate < 0.0) {
+        throw std::invalid_argument("TokenBucket: capacity must be > 0 and refillRate >= 0");
+    }
 }
 
 void TokenBucket::refill() {
@@ -32,14 +39,14 @@ bool TokenBucket::tryConsume(std::size_t count) {
     refill();
 
     double needed = static_cast<double>(count);
-    if (tokens_ >= needed) {
+    bool allowed = tokens_ >= needed;
+    if (allowed) {
         tokens_ -= needed;
         ++allowed_;
-        return true;
+    } else {
+        ++throttled_;
     }
-
-    ++throttled_;
-    return false;
+    return allowed;
 }
 
 double TokenBucket::tokensAvailable() {

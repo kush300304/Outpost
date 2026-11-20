@@ -1,17 +1,19 @@
+/// @file consistentHash.cpp
+/// @brief Consistent hashing ring: FNV-1a + fmix64 hash, (hash, nodeId) ring points.
+
 #include "common/consistentHash.h"
 
-#include <algorithm>
-#include <spdlog/spdlog.h>
+#include <stdexcept>
 
 namespace outpost {
 namespace common {
 
-// ── FNV-1a 64-bit hash ──────────────────────────────────────────────────
-// Fast, well-distributed, zero external dependencies. Same algorithm used
-// by many hash table implementations.
+namespace {
 
-static constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
-static constexpr uint64_t kFnvPrime = 1099511628211ULL;
+constexpr uint64_t kFnvOffsetBasis = 14695981039346656037ULL;
+constexpr uint64_t kFnvPrime = 1099511628211ULL;
+
+}  // namespace
 
 uint64_t ConsistentHashRing::hash(const std::string& key) {
     uint64_t h = kFnvOffsetBasis;
@@ -19,95 +21,67 @@ uint64_t ConsistentHashRing::hash(const std::string& key) {
         h ^= static_cast<uint64_t>(c);
         h *= kFnvPrime;
     }
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    h *= 0xc4ceb9fe1a85ec53ULL;
+    h ^= h >> 33;
     return h;
 }
 
 ConsistentHashRing::ConsistentHashRing(std::size_t virtualNodesPerNode)
     : virtualNodesPerNode_(virtualNodesPerNode) {
+    if (virtualNodesPerNode_ == 0) {
+        throw std::invalid_argument("ConsistentHashRing: virtualNodesPerNode must be > 0");
+    }
 }
 
-void ConsistentHashRing::addNode(const std::string& nodeId) {
-    std::lock_guard lock(mutex_);
-
-    // Check if already present
-    if (std::find(nodes_.begin(), nodes_.end(), nodeId) != nodes_.end()) {
-        spdlog::warn("ConsistentHashRing: node '{}' already on ring, skipping", nodeId);
-        return;
+bool ConsistentHashRing::addNode(const std::string& nodeId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool added = nodes_.insert(nodeId).second;
+    for (std::size_t i = 0; added && i < virtualNodesPerNode_; ++i) {
+        ring_.emplace(hash(nodeId + "#" + std::to_string(i)), nodeId);
     }
-
-    nodes_.push_back(nodeId);
-
-    // Place virtual nodes on the ring
-    for (std::size_t i = 0; i < virtualNodesPerNode_; ++i) {
-        // Virtual node key: "nodeId#i" — hashed to get ring position
-        std::string virtualKey = nodeId + "#" + std::to_string(i);
-        uint64_t h = hash(virtualKey);
-        ring_[h] = nodeId;
-    }
-
-    spdlog::info("ConsistentHashRing: added node '{}' ({} virtual nodes, {} total on ring)",
-                 nodeId, virtualNodesPerNode_, ring_.size());
+    return added;
 }
 
-void ConsistentHashRing::removeNode(const std::string& nodeId) {
-    std::lock_guard lock(mutex_);
-
-    auto it = std::find(nodes_.begin(), nodes_.end(), nodeId);
-    if (it == nodes_.end()) {
-        spdlog::warn("ConsistentHashRing: node '{}' not on ring, skipping removal", nodeId);
-        return;
+bool ConsistentHashRing::removeNode(const std::string& nodeId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool removed = nodes_.erase(nodeId) > 0;
+    for (std::size_t i = 0; removed && i < virtualNodesPerNode_; ++i) {
+        ring_.erase({hash(nodeId + "#" + std::to_string(i)), nodeId});
     }
-
-    nodes_.erase(it);
-
-    // Remove all virtual nodes for this physical node
-    for (std::size_t i = 0; i < virtualNodesPerNode_; ++i) {
-        std::string virtualKey = nodeId + "#" + std::to_string(i);
-        uint64_t h = hash(virtualKey);
-        ring_.erase(h);
-    }
-
-    spdlog::info("ConsistentHashRing: removed node '{}' ({} remaining on ring)", nodeId,
-                 ring_.size());
+    return removed;
 }
 
 std::string ConsistentHashRing::getNode(const std::string& key) const {
-    std::lock_guard lock(mutex_);
-
-    if (ring_.empty()) {
-        return "";
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string owner;
+    if (!ring_.empty()) {
+        auto it = ring_.lower_bound({hash(key), std::string()});
+        owner = it == ring_.end() ? ring_.begin()->second : it->second;
     }
-
-    uint64_t h = hash(key);
-
-    // Find the first virtual node with hash >= h (clockwise on the ring).
-    auto it = ring_.lower_bound(h);
-    if (it == ring_.end()) {
-        // Wrap around to the beginning of the ring
-        it = ring_.begin();
-    }
-
-    return it->second;
+    return owner;
 }
 
 std::size_t ConsistentHashRing::nodeCount() const {
-    std::lock_guard lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return nodes_.size();
 }
 
 std::size_t ConsistentHashRing::virtualNodeCount() const {
-    std::lock_guard lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     return ring_.size();
 }
 
 std::vector<std::string> ConsistentHashRing::getNodes() const {
-    std::lock_guard lock(mutex_);
-    return nodes_;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return std::vector<std::string>(nodes_.begin(), nodes_.end());
 }
 
 bool ConsistentHashRing::hasNode(const std::string& nodeId) const {
-    std::lock_guard lock(mutex_);
-    return std::find(nodes_.begin(), nodes_.end(), nodeId) != nodes_.end();
+    std::lock_guard<std::mutex> lock(mutex_);
+    return nodes_.count(nodeId) > 0;
 }
 
 }  // namespace common
