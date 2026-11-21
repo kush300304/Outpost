@@ -19,8 +19,11 @@ or to `benchmarks/results/`.
 The final checks from a fresh clone are in `docs/finalCheck.md`.
 
 **About references in these records:**
-- **Branch names and commit hashes** (`v1-completion`, `b5a5d59`, …) point into the development history. That
-  history was squashed into the v1.0.0 commit for publication, so the hashes are not in this repository.
+- **Commit hashes** (`b5a5d59`, …) are commits in this repository.
+  - The work happened on one development branch, `v1-completion`. For publication it was split into one branch
+    per phase (`phase/a-data-safety`, `phase/b-failure-detection`, …), each merged into `main`.
+  - Removing the private planning notes from the history gave every commit a new hash, and the hashes in these
+    records were updated to match.
 - **"R1" … "R50"** are the findings of an initial code review, a private planning document. Each record says
   what the finding was where it matters.
 - **"The owner"** is the project's author.

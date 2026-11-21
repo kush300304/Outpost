@@ -280,8 +280,8 @@ Light and dark themes follow the system setting (or the *Theme* button), and the
 All numbers come from real runs on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2
 with Docker Desktop 29.9.3. Raw output is in `docs/gates/` and `benchmarks/results/`.
 
-Commit hashes quoted in those records point into the development history, which was squashed for publication
-(see [docs/gates/README.md](docs/gates/README.md)).
+Commit hashes quoted in those records are commits in this repository. Each phase of the work is a branch
+merged into `main` (see [docs/gates/README.md](docs/gates/README.md)).
 
 A **final check from a fresh clone** reran everything after the last code change ([docs/finalCheck.md](docs/finalCheck.md)):
 - 163 tests, sanitizers clean;

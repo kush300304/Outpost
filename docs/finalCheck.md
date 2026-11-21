@@ -3,8 +3,8 @@
 Each final check rebuilds and reruns everything from a **fresh clone** of the published branch, in an empty
 directory: no build tree, dependency cache or Docker volume is reused. CI runs on GitHub for the same commit.
 
-Both checks ran on the development branch `v1-completion`. Its history was squashed into the v1.0.0 commit for
-publication, so the commit hashes below point into that development history.
+Both checks ran on the development branch `v1-completion`, whose commits now live on the phase branches merged
+into `main`. The commit hashes below were updated when the history was prepared for publication.
 
 - [Final check 2](#final-check-2-after-phases-i-and-j-2026-11-21): after group commit (Phase I) and HTTP caching
   with purge (Phase J), on 2026-11-21.
