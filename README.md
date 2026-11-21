@@ -86,7 +86,8 @@ flowchart LR
    overwrites newer data.
 
 More detail: [docs/architecture.md](docs/architecture.md); edge stats contract:
-[docs/statsApi.md](docs/statsApi.md).
+[docs/statsApi.md](docs/statsApi.md). The long-form explanation of every module, decision and bug is
+[docs/designWalkthrough.md](docs/designWalkthrough.md).
 
 ## Design decisions and trade-offs
 
