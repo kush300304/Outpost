@@ -51,7 +51,11 @@ RouterServer::RouterServer(const RouterConfig& config) : config_(config), ring_(
 
     // Purge goes to every configured edge, not only those on the ring: an edge that is off the
     // ring may still hold the key and serve it once it rejoins.
-    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
+    // Registered with a content reader that is never called: a purge has no body, and a client that
+    // sends none without a Content-Length (`curl -X POST`) is answered at once instead of after the
+    // server's read timeout.
+    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res,
+                                              const httplib::ContentReader& /*unusedBody*/) {
         std::string key = req.matches[1].str();
         purges_.fetch_add(1, std::memory_order_relaxed);
         json results = json::array();
