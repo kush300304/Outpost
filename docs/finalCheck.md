@@ -24,7 +24,7 @@ branch change documentation only (`docs/handsOnTour.md`, the interview notes, RE
 | Clean build + 163 tests (5 suites) | **PASS** (100 %) |
 | ASan + UBSan | **PASS** (5/5 suites, 0 reports) |
 | ThreadSanitizer | **PASS** (5/5 suites, 0 reports) |
-| CLAUDE.md style + clang-format | **PASS** (47 files, 0 violations, all formatted) |
+| Code style (CONTRIBUTING.md) + clang-format | **PASS** (47 files, 0 violations, all formatted) |
 | `docker compose up` from scratch (volumes removed) | **PASS** (7 services healthy in 19.8 s; only 8080 and 8090 published) |
 | Integration test | **PASS** (21/21) |
 | Dashboard acceptance | **PASS** (18/18) |
@@ -303,7 +303,7 @@ g++ 15.2.0, CMake 4.2.3. CI runs on GitHub's ubuntu-24.04 runners.
 | Clean build + 140 tests (5 suites) | **PASS** (100 %) |
 | ASan + UBSan | **PASS** (5/5 suites, 0 reports) |
 | ThreadSanitizer | **PASS** (5/5 suites, 0 reports) |
-| CLAUDE.md style + clang-format | **PASS** (44 files, 0 violations, all formatted) |
+| Code style (CONTRIBUTING.md) + clang-format | **PASS** (44 files, 0 violations, all formatted) |
 | `docker compose up` from the fresh clone | **PASS** (7 services healthy; only 8080 and 8090 published) |
 | Spec demo sequence (real `docker compose stop storage`) | **PASS** |
 | Integration test | **PASS** (15/15) |
@@ -608,7 +608,7 @@ build-and-test: success
 | Benchmark with real p50/p95/p99 | **PASS** | §6 |
 | Idempotent replay check | **PASS** | §5: 59 duplicates recognised after the mid-drain kill; `EdgeServerTest.ReplayAfterCrashBeforeDiscardIsIdempotent` |
 
-### Build guide and CLAUDE.md
+### Build guide and code style
 
 | Item | Result | Evidence |
 |---|---|---|
@@ -616,7 +616,7 @@ build-and-test: success
 | Naming conventions, header/source split | **PASS** | §2 checkStyle |
 | Folder structure: README, CI, `scripts/{chaosTest,runBenchmark,seedData}.sh`, `benchmarks/results/`, `docs/{architecture,benchmarks}.md` | **PASS** | repository tree |
 | `proto/`, `terraform/` | **N/A** | v2 and the post-v1 cloud step, out of scope |
-| CLAUDE.md code style (single exit, `@file`, no raw new/delete, timeouts, .clang-format) | **PASS** | §2 |
+| Code style in CONTRIBUTING.md (single exit, `@file`, no raw new/delete, timeouts, .clang-format) | **PASS** | §2 |
 
 ### Dashboard spec
 
