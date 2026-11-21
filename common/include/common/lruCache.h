@@ -43,6 +43,9 @@ public:
     {
         Value value;
         bool fresh = true;
+        uint64_t version = 0;  ///< Version given to the put() that stored the value.
+        std::string tag;       ///< Opaque tag given to that put() (the edge stores the ETag).
+        std::chrono::milliseconds age{0};  ///< Time since that put().
     };
 
     /// @brief Hit/miss/eviction counters.
@@ -83,8 +86,9 @@ public:
 
     /// @brief Insert or update key, restarting its ttl and making it most recently used.
     /// @param version Version of value; the put is ignored when the cached entry is newer.
+    /// @param tag     Opaque metadata stored with the value and returned by lookup().
     /// @return false when the put was ignored because a newer version is cached.
-    bool put(const Key& key, const Value& value, uint64_t version = 0);
+    bool put(const Key& key, const Value& value, uint64_t version = 0, const std::string& tag = "");
 
     /// @brief Whether key is cached (fresh or expired), without promoting it.
     bool contains(const Key& key) const;
@@ -124,6 +128,7 @@ private:
         Key key;
         Value value;
         uint64_t version = 0;
+        std::string tag;
         Clock::time_point storedAt;
     };
     using ListType = std::list<Entry>;
