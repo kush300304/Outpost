@@ -7,6 +7,7 @@ add_library(outpost_common
     src/wal.cpp
     src/urlEncode.cpp
     src/shutdownSignal.cpp
+    src/httpCache.cpp
 )
 
 target_include_directories(outpost_common PUBLIC
@@ -24,6 +25,7 @@ if(BUILD_TESTING)
         tests/testCircuitBreaker.cpp
         tests/testWal.cpp
         tests/testUrlEncode.cpp
+        tests/testHttpCache.cpp
         tests/testShutdownSignal.cpp
     )
     target_link_libraries(common_tests PRIVATE
