@@ -86,7 +86,8 @@ flowchart LR
    overwrites newer data.
 
 More detail: [docs/architecture.md](docs/architecture.md); edge stats contract:
-[docs/statsApi.md](docs/statsApi.md).
+[docs/statsApi.md](docs/statsApi.md). The long-form explanation of every module, decision and bug is
+[docs/designWalkthrough.md](docs/designWalkthrough.md).
 
 ## Design decisions and trade-offs
 
@@ -252,9 +253,9 @@ v2 ideas are listed in [docs/roadmap.md](docs/roadmap.md#v2-ideas-not-built):
 
 ```
 common/      hand-built primitives: consistentHash, lruCache, tokenBucket, circuitBreaker, wal (+ urlEncode,
-             requestLimits, shutdownSignal)
+             requestLimits, shutdownSignal), with their tests in common/tests
 router/      consistent-hash router service
-edge/        edge service (tests for the primitives live in edge/tests, per the build guide)
+edge/        edge service
 write-api/   validation service in front of storage
 storage/     versioned key-value store with WAL durability
 dashboard/   static dashboard + nginx config
