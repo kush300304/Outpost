@@ -32,7 +32,7 @@ Start the cluster with `docker compose up -d --build --wait`. Use a fresh key, o
 - [ ] `curl -i -X PUT localhost:8080/key/foo -d bar` gives `200`, `X-Write-Mode: DIRECT`, `X-Node: edge-N`.
 - [ ] `curl -i localhost:8080/key/foo` gives `200`, `X-Cache: HIT`, the same `X-Node`.
 - [ ] `curl -s localhost:8080/debug/route/foo` names that same edge.
-- [ ] `docker compose stop storage`, wait about 3 s, then
+- [ ] `docker compose stop storage`, wait about 8 s (three failed health checks), then
       `docker compose exec edge-1 curl -s localhost:8081/debug/stats | grep -A1 '"state"'` shows `OPEN`.
 - [ ] `curl -i localhost:8080/key/foo` gives `200`, `X-Cache: STALE`.
 - [ ] `curl -i -X PUT localhost:8080/key/foo2 -d queued` gives `202`, `X-Write-Mode: QUEUED`.

@@ -1,5 +1,8 @@
 # Outpost
 
+[![CI](https://github.com/kush300304/Outpost/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kush300304/Outpost/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A fault-tolerant edge/origin request router in C++17.** Outpost puts consistent-hash routing, per-edge
 caching, rate limiting and a circuit breaker in front of a small authoritative origin. When the origin fails,
 the system degrades instead of falling over: cached reads keep being served, writes are queued durably at the
@@ -167,7 +170,8 @@ More detail: [docs/architecture.md](docs/architecture.md); edge stats contract:
     31.9 %.
   - Adding a node now moves 29.3 / 23.0 / 16.4 % of keys (ideal 25 / 20 / 16.7 %).
 - **Breaker thresholds: 3 failures, 1 s heartbeat, 5 s reset.**
-  - An outage is detected within about 3 s (measured 0.7–3.1 s across runs; failed requests speed it up).
+  - An outage is detected within a few seconds: measured 0.7–5.3 s across runs. Each health check can wait up
+    to 1 s on a dead dependency, and failed requests speed detection up.
   - During recovery the origin sees a single probe, not a thundering herd.
   - A probe whose result is lost is replaced after the same timeout, so the breaker can't wedge in HALF_OPEN.
   - Lower thresholds react faster but flap on transient errors; higher ones serve errors for longer.
@@ -276,6 +280,9 @@ Light and dark themes follow the system setting (or the *Theme* button), and the
 All numbers come from real runs on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2
 with Docker Desktop 29.9.3. Raw output is in `docs/gates/` and `benchmarks/results/`.
 
+Commit hashes quoted in those records are commits in this repository. Each phase of the work is a branch
+merged into `main` (see [docs/gates/README.md](docs/gates/README.md)).
+
 A **final check from a fresh clone** reran everything after the last code change ([docs/finalCheck.md](docs/finalCheck.md)):
 - 163 tests, sanitizers clean;
 - integration 21/21, dashboard 18/18, browser 9/9;
@@ -373,7 +380,7 @@ build was then replayed at exactly that rate (`RATE=2587`).
     connections, not ones cut mid-response: 11 of 267 reads in the final chaos run's edge-kill window.
 - **Logs:** plain text, without a request id that follows one request across services.
 
-v2 ideas are listed in [docs/roadmap.md](docs/roadmap.md#v2-ideas-not-built):
+v2 ideas (not built):
 - structured JSON logs with a request id carried across hops;
 - purge by tag or prefix;
 - Kafka cache invalidation between edges;
@@ -396,5 +403,9 @@ dashboard/   static dashboard (ES modules in src/), nginx config, browser click 
 scripts/     localCluster, integrationTest, chaosTest, runBenchmark, dashboardAcceptance, seedData,
              shutdownTest, checkStyle, format
 benchmarks/  k6 workloads (readHeavy, conditional) and dated results
-docs/        architecture, stats API, benchmarks, testing checklist, roadmap, gate records, images
+docs/        architecture, design walkthrough, hands-on tour, stats API, benchmarks, testing checklist,
+             decision records (adr/), gate records, final checks, images
 ```
+
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Security model and reporting: [SECURITY.md](SECURITY.md).
+Licence: [MIT](LICENSE).

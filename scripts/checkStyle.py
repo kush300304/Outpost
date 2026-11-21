@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """@file checkStyle.py
-Checks C++ sources against the CLAUDE.md code-style rules that can be measured mechanically.
+Checks C++ sources against the code-style rules in CONTRIBUTING.md that can be measured mechanically.
 
 Rules:
   single-exit      at most one return statement per function or lambda body, and when present
