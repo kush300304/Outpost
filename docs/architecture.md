@@ -9,8 +9,8 @@ without Docker (no dashboard).
 
 ```mermaid
 flowchart LR
-    client([Client]) -->|"GET/PUT /key/k :8080"| router
-    dashboard([Dashboard :8090]) -->|"/router, /edge1..3, /origin-admin"| router
+    client([Client]) -->|"GET/PUT /key/k, POST /purge/key/k :8080"| router
+    dashboard([Dashboard :8090]) -->|"/router, /edge1..3, /origin-admin, /storage/debug/stats"| router
     subgraph cluster["compose network (only :8080 and :8090 published)"]
         router["router<br/>consistent-hash ring<br/>150 virtual nodes per edge"]
         router -->|owner of k| edge1["edge-1 :8081"]
@@ -28,10 +28,11 @@ flowchart LR
 
 | Service | Owns | Key code |
 |---|---|---|
-| router | The hash ring of reachable edges, membership health checks | `router/src/routerServer.cpp`, `common/consistentHash.*` |
-| edge (×3) | LRU cache, per-client token buckets, circuit breaker, write queue (WAL) | `edge/src/edgeServer.cpp`, `common/{lruCache,tokenBucket,circuitBreaker,wal}.*` |
-| write-api | Request validation, the only client of storage | `write-api/src/apiHandlers.cpp` |
-| storage | Authoritative versioned key-value map, durable through its WAL | `storage/src/kvStore.cpp`, `storage/src/storageHandlers.cpp` |
+| router | The hash ring of reachable edges, membership health checks, purge fan-out | `router/src/routerServer.cpp`, `common/consistentHash.*` |
+| edge (×3) | LRU cache with HTTP caching headers, per-client token buckets, circuit breaker, write queue (WAL) | `edge/src/edgeServer.cpp`, `common/{lruCache,tokenBucket,circuitBreaker,wal,httpCache}.*` |
+| write-api | Request validation, the only client of storage; passes conditional reads through | `write-api/src/apiHandlers.cpp` |
+| storage | Authoritative versioned key-value map, durable through its WAL with group commit; answers 304 | `storage/src/kvStore.cpp`, `storage/src/storageHandlers.cpp` |
+| dashboard | Static page (ES modules) + nginx proxy | `dashboard/` |
 
 The five primitives in `common/` are hand-built and use no third-party libraries. Services use cpp-httplib,
 nlohmann/json and spdlog.
@@ -47,16 +48,43 @@ incoming pair is newer, and answers `applied`, `duplicate` (same pair, already s
 write). Only applied writes reach the storage WAL. This one rule makes replay idempotent, and makes it impossible
 for an old queued write to overwrite newer data.
 
+The same pair is the value's HTTP entity tag: `ETag: "<version>-<writerId>"`. Two copies with the same tag are
+the same write, so every layer can answer "is my copy current?" without comparing bodies. Writer ids are
+therefore limited to `[A-Za-z0-9._-]` (1–64 characters).
+
 ## Read path
 
-1. The router hashes the key, picks the owning edge, and forwards the request. The key is percent-encoded and
-   the client address is appended to `X-Forwarded-For`.
+1. The router hashes the key, picks the owning edge, and forwards the request. The key is percent-encoded, the
+   client address is appended to `X-Forwarded-For`, and the client's `If-None-Match` and `Cache-Control` go
+   along.
 2. The edge takes a token from that client's bucket (first `X-Forwarded-For` hop). An empty bucket answers
    `429` with `Retry-After: 1`.
 3. A fresh cached entry (younger than `CACHE_TTL_MS`, 60 s by default) is answered `X-Cache: HIT` without
    touching the origin.
-4. A missing or expired entry is fetched from write-api while the breaker is CLOSED. The result is cached with
-   its version and answered `X-Cache: MISS`; an absent key is `404`.
+4. A missing entry is fetched from write-api while the breaker is CLOSED. The result is cached with its version
+   and ETag and answered `X-Cache: MISS`; an absent key is `404`.
+5. An expired entry, or any entry the client asks for with `Cache-Control: no-cache` or `max-age=0`, is
+   revalidated: the edge sends its ETag in `If-None-Match`. write-api forwards it to storage, which answers `304`
+   without a body when it still holds that write. The edge keeps its copy, restarts its ttl and answers
+   `X-Cache: REVALIDATED`; a changed value comes back as a normal `200` and replaces the copy.
+6. Every answer that carries a value has these headers:
+   - `ETag`;
+   - `Last-Modified` (the version's wall-clock second);
+   - `Age` (seconds since this edge stored or revalidated it);
+   - `Cache-Control: max-age=<remaining ttl>, stale-if-error=<CACHE_STALE_IF_ERROR_MS in s>`.
+
+   If the client's `If-None-Match` matches the ETag, the answer is `304 Not Modified` with no body. That is
+   counted as `cache.notModified`.
+
+## Purge
+
+`POST /purge/key/<k>` on the router is sent to **every configured edge**, not only those on the ring: an edge that
+is briefly off the ring may still hold the key and serve it once it rejoins.
+- **Each edge** evicts the key (`POST /purge/key/<k>`) and logs a `purge` event.
+- **The router** answers `200 {"complete": true, "edges": [...]}` when every edge confirmed.
+- **If an edge could not be reached**, the router answers `502` with `complete: false`. That edge may serve its
+  copy until ttl + stale-if-error.
+- **Cost:** the fan-out is sequential, and each call is bounded by `EDGE_TIMEOUT_MS`.
 
 ## Write path
 
@@ -76,7 +104,7 @@ Every edge runs a maintenance thread with this cycle:
   requests, open the breaker.
 - **While OPEN:**
   - no traffic reaches the origin;
-  - cached values, fresh or expired, are served as `X-Cache: STALE`;
+  - cached values no older than ttl + `CACHE_STALE_IF_ERROR_MS` (1 h by default) are served as `X-Cache: STALE`;
   - uncached keys answer `503`;
   - writes are queued.
 - **Probe:** after `BREAKER_RESET_TIMEOUT_MS` (5 s by default) the breaker goes HALF_OPEN and admits exactly
@@ -123,8 +151,22 @@ On open:
 - a damaged record in the middle is skipped by resynchronising on the next valid record;
 - an invalid tail (a torn final write) is truncated.
 
-Appends are one unbuffered write followed by `fsync` (configurable with `WAL_FSYNC`). A failed append rolls the
-file back to its previous size.
+Each append is one unbuffered write. With `WAL_FSYNC=1` (the default) the record is on disk before `append()`
+returns, and concurrent appends share fsyncs (**group commit**):
+- **Leader:** the first appender that finds no fsync running fsyncs everything written so far, with the log's
+  lock released so others can keep appending.
+- **Followers:** later appenders wait for the fsync that covers their record.
+- **No added delay:** a lone write is never held back to wait for a batch.
+
+More rules:
+- `discardThrough` and `truncate` wait for a running fsync.
+- A failed write rolls the file back to its previous size.
+- A failed fsync marks the log failed: every later append throws until the process restarts and recovers from
+  disk, because after a failed fsync the kernel may already have dropped the data.
+
+Storage decides a put under a shared lock, makes it durable without holding the map lock, then applies it under
+the exclusive lock after checking again that no newer write landed meanwhile. The map therefore only ever holds
+durable data, and replaying the log with the same comparison rebuilds the same state.
 
 ## Consistency model
 
@@ -141,9 +183,20 @@ NTP. Deletes are not part of v1, because they would need versioned tombstones.
 | Port | Service | Published by compose |
 |---|---|---|
 | 8080 | router | yes (client entry point) |
-| 8090 | dashboard (nginx: page + proxy to `/router`, `/edge1..3`, `/origin-admin`) | yes |
+| 8090 | dashboard (nginx: page + proxy to `/router`, `/edge1..3`, `/origin-admin`, storage `/debug/stats` only) | yes |
 | 8081–8083 | edge-1..3 | no |
 | 9090 | write-api | no |
 | 9091 | storage | no |
 
 See `docs/statsApi.md` for the edge `/debug/stats` contract.
+
+## Logs
+
+Every service logs to standard output: start-up, breaker transitions, queue drains, failovers, purges and errors,
+never each request.
+- **Under Docker**, the container runtime stores the logs. Compose keeps at most 3 × 10 MB per container. Read
+  them with `docker compose logs -f <service>`.
+- **Under `scripts/localCluster.sh`**, they go to `build/localCluster/<service>.log`.
+- **Level:** `LOG_LEVEL` sets it (trace … off; default info).
+- **Per-request numbers** are in each service's `/debug/stats`, and the edges keep their last 100 events
+  there too.
