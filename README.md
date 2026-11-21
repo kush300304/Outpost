@@ -353,7 +353,7 @@ Details: [docs/benchmarks.md](docs/benchmarks.md).
 | ASan + UBSan | `cmake -S . -B build-asan -DOUTPOST_SANITIZE=address,undefined && cmake --build build-asan -j && ctest --test-dir build-asan` | 100 % passed, no sanitizer reports |
 | ThreadSanitizer | same, with `-B build-tsan -DOUTPOST_SANITIZE=thread` | 100 % passed, no `ThreadSanitizer` warnings |
 | Style | `python3 scripts/checkStyle.py && scripts/format.sh --check` | `0 violations` and `all formatted` |
-| Integration (Compose) | `scripts/integrationTest.sh` | `integrationTest: 0 failed check(s)` (21 checks) |
+| Integration (Compose) | `scripts/integrationTest.sh` | `integrationTest: 0 failed check(s)` (22 checks) |
 | Chaos (Compose) | `scripts/chaosTest.sh` | `RESULT: PASS`: acknowledged writes persisted = sent |
 | Benchmark (Compose) | `scripts/runBenchmark.sh 60s 32`; `RATE=2587 …` for a fixed load; `WORKLOAD=conditional …` for 304s | a new `benchmarks/results/<date>-…/summary.md` |
 | Dashboard acceptance | `scripts/dashboardAcceptance.sh` | `dashboardAcceptance: 0 failed check(s)` (18 checks) |
