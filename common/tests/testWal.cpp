@@ -611,3 +611,38 @@ TEST(WalTest, DiscardThroughDuringConcurrentAppendsKeepsLaterEntries)
     }
     EXPECT_EQ(entries.back().sequenceNumber, wal.currentSequence());
 }
+
+TEST(WalTest, TruncateDuringConcurrentAppendsLeavesAConsistentLog)
+{
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path(), true);
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> writers;
+    for (int t = 0; t < 4; ++t)
+    {
+        writers.emplace_back([&wal, &stop]() {
+            while (!stop.load())
+            {
+                wal.appendPut("k", "v");
+            }
+        });
+    }
+    for (int round = 0; round < 20; ++round)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        wal.truncate();
+    }
+    stop = true;
+    for (auto& thread : writers)
+    {
+        thread.join();
+    }
+    auto entries = wal.replay();
+    for (std::size_t i = 1; i < entries.size(); ++i)
+    {
+        ASSERT_EQ(entries[i].sequenceNumber, entries[i - 1].sequenceNumber + 1);
+    }
+    EXPECT_TRUE(entries.empty() || entries.back().sequenceNumber == wal.currentSequence());
+    WriteAheadLog reopened(tmp.path(), true);
+    EXPECT_EQ(reopened.replay().size(), entries.size());
+}

@@ -31,9 +31,13 @@ cat "$OUT/environment.txt"
 
 WAL_FSYNC="${WAL_FSYNC:-1}" RATE_LIMIT_PER_SEC=1000000 RATE_LIMIT_BURST=1000000 \
     docker compose up -d --wait >/dev/null 2>&1
+# Storage counters are cumulative since storage started, so the run's WAL appends and fsyncs are the
+# difference between a snapshot taken before k6 and one taken after it.
+docker compose exec -T storage curl -s http://localhost:9091/debug/stats >"$OUT/storageStatsBefore.json" || true
 docker compose --profile bench run --rm --user "$(id -u):$(id -g)" \
     -e DURATION="$DURATION" -e VUS="$VUS" -e OUT_DIR="/$OUT" \
     k6 run --quiet /benchmarks/k6/readHeavy.js >"$OUT/k6.txt" 2>&1 || true
+docker compose exec -T storage curl -s http://localhost:9091/debug/stats >"$OUT/storageStatsAfter.json" || true
 docker compose up -d --wait >/dev/null 2>&1
 
 python3 - "$OUT" <<'PY' | tee "$OUT/summary.md"
@@ -64,5 +68,14 @@ print(f"\nCache hit ratio of GETs: {count('count_get_hit') / gets:.1%}" if gets 
 print(f"Status codes: 2xx {count('status_2xx')}, 404 {count('status_404')}, 429 {count('status_429')}, "
       f"5xx {count('status_5xx')}, other {count('status_other')}")
 print(f"k6 http_req_failed rate (includes setup): {m['http_req_failed']['values']['rate']:.4%}")
+try:
+    before = json.load(open(f"{out}/storageStatsBefore.json")).get("wal", {})
+    after = json.load(open(f"{out}/storageStatsAfter.json")).get("wal", {})
+    appends = after["appends"] - before["appends"]
+    fsyncs = after["fsyncs"] - before["fsyncs"]
+    print(f"Storage WAL during this run (setup PUTs included): {appends} appends, {fsyncs} fsyncs "
+          f"({appends / max(fsyncs, 1):.2f} appends per fsync)")
+except (OSError, ValueError, KeyError):
+    pass
 PY
 echo "benchmark results: $OUT"
