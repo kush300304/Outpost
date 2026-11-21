@@ -227,19 +227,23 @@ WriteAheadLog::WriteAheadLog(const std::string& filePath, bool syncOnAppend)
     }
     recordCount_ = scan.entries.size();
     fileSize_ = scan.validEnd;
+    durableSequence_ = sequenceCounter_;
     recoveredEntries_ = std::move(scan.entries);
     file_ = openForAppend(filePath_);
 }
 
 uint64_t WriteAheadLog::append(const WalEntry& entry)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (failed_)
+    {
+        throw std::runtime_error("WAL: " + filePath_ +
+                                 " failed an fsync earlier; restart to recover");
+    }
     WalEntry stamped = entry;
     stamped.sequenceNumber = sequenceCounter_ + 1;
     std::vector<uint8_t> record = encodeRecord(stamped);
-
-    bool written = std::fwrite(record.data(), 1, record.size(), file_.get()) == record.size() &&
-                   (!syncOnAppend_ || ::fsync(::fileno(file_.get())) == 0);
+    bool written = std::fwrite(record.data(), 1, record.size(), file_.get()) == record.size();
     if (!written)
     {
         std::clearerr(file_.get());
@@ -251,6 +255,40 @@ uint64_t WriteAheadLog::append(const WalEntry& entry)
     fileSize_ += record.size();
     ++recordCount_;
     ++entriesAppended_;
+
+    // Group commit: the first appender that finds no fsync running becomes the leader and fsyncs
+    // everything written so far, with the lock released so others can keep appending; the others
+    // wait until a fsync that started after their write has finished.
+    while (syncOnAppend_ && !failed_ && durableSequence_ < stamped.sequenceNumber)
+    {
+        if (syncInProgress_)
+        {
+            syncDone_.wait(lock);
+        }
+        else
+        {
+            syncInProgress_ = true;
+            uint64_t target = sequenceCounter_;
+            int descriptor = ::fileno(file_.get());
+            lock.unlock();
+            bool synced = ::fsync(descriptor) == 0;
+            lock.lock();
+            syncInProgress_ = false;
+            ++fsyncCount_;
+            durableSequence_ = synced ? std::max(durableSequence_, target) : durableSequence_;
+            failed_ = !synced;
+            syncDone_.notify_all();
+        }
+    }
+    if (!syncOnAppend_)
+    {
+        durableSequence_ = sequenceCounter_;
+    }
+    if (durableSequence_ < stamped.sequenceNumber)
+    {
+        throw std::runtime_error("WAL: fsync failed for " + filePath_ +
+                                 "; the write is not durable");
+    }
     return stamped.sequenceNumber;
 }
 
@@ -288,7 +326,8 @@ std::vector<WalEntry> WriteAheadLog::takeRecoveredEntries()
 
 std::size_t WriteAheadLog::discardThrough(uint64_t sequenceNumber)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    syncDone_.wait(lock, [this] { return !syncInProgress_; });
     ScanResult scan = scanRecords(readFile(filePath_));
     std::vector<uint8_t> kept;
     std::size_t keptCount = 0;
@@ -330,7 +369,8 @@ std::size_t WriteAheadLog::discardThrough(uint64_t sequenceNumber)
 
 void WriteAheadLog::truncate()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
+    syncDone_.wait(lock, [this] { return !syncInProgress_; });
     std::filesystem::resize_file(filePath_, 0);
     fileSize_ = 0;
     recordCount_ = 0;
@@ -357,6 +397,18 @@ uint64_t WriteAheadLog::currentSequence() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return sequenceCounter_;
+}
+
+WalStats WriteAheadLog::stats() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return WalStats{entriesAppended_, fsyncCount_};
+}
+
+uint64_t WriteAheadLog::durableSequence() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return durableSequence_;
 }
 
 WalRecoveryReport WriteAheadLog::recoveryReport() const

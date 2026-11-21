@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <filesystem>
@@ -523,4 +524,90 @@ TEST(WalTest, DiscardThroughEverythingLeavesAnEmptyUsableLog)
     EXPECT_EQ(fs::file_size(tmp.path()), 0u);
     EXPECT_EQ(wal.appendPut("c", "3"), 3u);
     EXPECT_EQ(wal.replay().size(), 1u);
+}
+
+TEST(WalTest, ConcurrentAppendsShareFsyncs)
+{
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path(), true);
+    constexpr int kThreads = 8;
+    constexpr int kAppendsPerThread = 50;
+    std::vector<std::thread> threads;
+    for (int t = 0; t < kThreads; ++t)
+    {
+        threads.emplace_back([&wal, t]() {
+            for (int i = 0; i < kAppendsPerThread; ++i)
+            {
+                wal.appendPut("t" + std::to_string(t) + "_" + std::to_string(i), "v");
+            }
+        });
+    }
+    for (auto& thread : threads)
+    {
+        thread.join();
+    }
+    auto stats = wal.stats();
+    EXPECT_EQ(stats.appends, static_cast<uint64_t>(kThreads * kAppendsPerThread));
+    EXPECT_LT(stats.fsyncs, stats.appends) << "every append paid for its own fsync";
+    EXPECT_EQ(wal.replay().size(), static_cast<std::size_t>(kThreads * kAppendsPerThread));
+}
+
+TEST(WalTest, EveryAppendIsDurableWhenItReturns)
+{
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path(), true);
+    std::vector<std::thread> threads;
+    std::atomic<int> notDurable{0};
+    for (int t = 0; t < 6; ++t)
+    {
+        threads.emplace_back([&wal, &notDurable]() {
+            for (int i = 0; i < 40; ++i)
+            {
+                uint64_t seq = wal.appendPut("k", "v");
+                notDurable += wal.durableSequence() >= seq ? 0 : 1;
+            }
+        });
+    }
+    for (auto& thread : threads)
+    {
+        thread.join();
+    }
+    EXPECT_EQ(notDurable.load(), 0);
+}
+
+TEST(WalTest, DiscardThroughDuringConcurrentAppendsKeepsLaterEntries)
+{
+    TempWalFile tmp;
+    WriteAheadLog wal(tmp.path(), true);
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> writers;
+    for (int t = 0; t < 4; ++t)
+    {
+        writers.emplace_back([&wal, &stop]() {
+            while (!stop.load())
+            {
+                wal.appendPut("k", "v");
+            }
+        });
+    }
+    uint64_t discarded = 0;
+    for (int round = 0; round < 20; ++round)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        discarded = wal.currentSequence() / 2;
+        wal.discardThrough(discarded);
+    }
+    stop = true;
+    for (auto& thread : writers)
+    {
+        thread.join();
+    }
+    auto entries = wal.replay();
+    ASSERT_FALSE(entries.empty());
+    EXPECT_GT(entries.front().sequenceNumber, discarded);
+    for (std::size_t i = 1; i < entries.size(); ++i)
+    {
+        ASSERT_EQ(entries[i].sequenceNumber, entries[i - 1].sequenceNumber + 1);
+    }
+    EXPECT_EQ(entries.back().sequenceNumber, wal.currentSequence());
 }
