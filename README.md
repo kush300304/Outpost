@@ -1,45 +1,141 @@
+<div align="center">
+
 # Outpost
+
+**A fault-tolerant edge/origin request router in C++17.**<br>
+Cached reads keep flowing, and no acknowledged write is lost, even while the origin is down.
 
 [![CI](https://github.com/kush300304/Outpost/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kush300304/Outpost/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C.svg)
+![Docker Compose](https://img.shields.io/badge/run%20with-Docker%20Compose-2496ED.svg)
 
-**A fault-tolerant edge/origin request router in C++17.** Outpost puts consistent-hash routing, per-edge
-caching, rate limiting and a circuit breaker in front of a small authoritative origin. When the origin fails,
-the system degrades instead of falling over: cached reads keep being served, writes are queued durably at the
-edge, and everything reconciles, without loss or double-apply, when the origin comes back.
+[Quick start](#quick-start) · [Run it locally](#run-it-locally) · [How it works](#how-it-works) ·
+[Design decisions](#design-decisions) · [Results](#results) · [Documentation](#documentation)
 
-![The Outpost dashboard: live request flow and the guided demo, all nine steps passed](docs/images/dashboardLight.png)
+<img src="docs/images/dashboardLight.png" alt="The Outpost dashboard: the live request flow and the guided demo with all nine steps passed" width="100%">
 
-**What's in it**
-- **Five core primitives, built by hand** in `common/` with no third-party code: a consistent hash ring, an LRU
-  cache, a token bucket, a circuit breaker and a write-ahead log (WAL). The WAL does group commit.
-- **Four services:**
-  - a stateless **router** on a hash ring;
-  - three **edges** with caching, rate limiting, a breaker and a durable write queue;
-  - **write-api**, which validates requests;
-  - **storage**, a versioned key-value store made durable by its WAL.
-- **Standard HTTP caching:** `ETag`, `304 Not Modified`, revalidation with the origin, `stale-if-error`, and a purge
-  API.
-- **A live dashboard** with a guided nine-step demo of the failure story.
-- **Evidence, not claims:** 163 tests, clean ASan/UBSan/TSan runs, a chaos test that kills services under load,
-  and k6 benchmarks with the raw results committed.
+</div>
 
-The services use cpp-httplib, nlohmann/json and spdlog.
+## At a glance
 
-## The problem
+| **0 lost writes** | **113.9 → 7.9 ms** | **≈ 1 ms** | **77 %** | **163 tests** |
+|:---:|:---:|:---:|:---:|:---:|
+| in chaos tests that kill storage, write-api and an edge under load | PUT p50 with group commit, at the same load, every write still fsync'd | cache-hit p50 through the router | of conditional reads answered `304` with no body (1 % writes) | unit and in-process, clean under ASan, UBSan and TSan |
 
-Systems that serve reads from many edge nodes and send writes to one source of truth usually fail in two ways:
+Every number on this page comes from a real run whose raw output is committed. Nothing is estimated.
 
-1. **Retry storms turn "slow" into "dead".** When the origin slows down, every edge retries at once, the
-   origin gets more load exactly when it can least take it, and the failure cascades.
-2. **Naive routing reshuffles everything on scale events.** With `hash(key) % N`, adding or removing one node
-   remaps almost every key, so every cache goes cold at the moment you are scaling.
+## Why Outpost
 
-Outpost addresses both:
-- A **circuit breaker** per edge stops calling a failing origin and serves cached data instead.
-- **Consistent hashing with virtual nodes** moves only about 1/N of the keys when the edge fleet changes.
+Many edge servers answer reads close to users, and one origin owns the data. That is how CDNs and large web
+services are built. Outpost is a small, complete version of that architecture, built to show how it behaves when
+things go wrong.
 
-## Architecture
+| The problem | Outpost's answer |
+|---|---|
+| **The origin fails, and everything fails with it.** Every edge keeps calling it, threads pile up behind timeouts, and the retries flood it as it tries to recover. | A **circuit breaker** per edge fails fast. While the origin is down it serves cached copies (`STALE`), queues writes, and lets exactly **one** probe through to test recovery. |
+| **Writes made during an outage are lost.** | Each edge keeps a **durable write queue** (a hand-built write-ahead log) and replays it in order on recovery. Versioned writes make every replay safe: nothing is lost or applied twice. |
+| **Scaling reshuffles every key.** With `hash % N`, adding a server remaps almost everything, so every cache goes cold at once. | **Consistent hashing** with 150 virtual nodes per edge: adding or removing an edge moves only its share of keys. |
+| **Clients re-download data that hasn't changed.** | **Standard HTTP caching:** `ETag`, `304 Not Modified`, revalidation with the origin, `stale-if-error`, and a purge API. |
+
+**What's inside**
+- **Five primitives, written by hand** in `common/` with no third-party code: a consistent hash ring, an LRU
+  cache, a token bucket, a circuit breaker and a write-ahead log with group commit.
+- **Four services:** a stateless router, three edges, a validating write-api, and a versioned key-value store.
+- **A live dashboard** with a self-checking, nine-step demo of the failure story.
+- **Evidence:** unit, sanitizer, integration, chaos and browser tests, and k6 benchmarks, all run in CI or
+  recorded with the hardware they ran on.
+
+## Quick start
+
+All you need is Docker with Compose v2.
+
+```bash
+git clone https://github.com/kush300304/Outpost.git && cd Outpost
+docker compose up -d --build --wait     # router, 3 edges, write-api, storage, dashboard
+```
+
+Then open **http://localhost:8090** and click **Run all steps**. Or talk to the API directly:
+
+```bash
+curl -X PUT localhost:8080/key/hello -d world
+curl -i localhost:8080/key/hello                                      # X-Cache: HIT, ETag: "<version>-edge-N"
+curl -i -H 'If-None-Match: "<that ETag>"' localhost:8080/key/hello    # 304 Not Modified, no body
+curl -i -H 'Cache-Control: no-cache' localhost:8080/key/hello         # X-Cache: REVALIDATED
+curl -X POST localhost:8080/purge/key/hello                           # {"complete":true,"edges":[…]}
+```
+
+| Port | What |
+|---|---|
+| 8080 | Router, the API: `GET`/`PUT /key/<key>`, `POST /purge/key/<key>`, `/debug/route/<key>`, `/debug/stats` |
+| 8090 | Dashboard |
+
+The edges (8081–8083), write-api (9090) and storage (9091) are reachable only inside the Compose network.
+
+## Run it locally
+
+### Option A: with Docker (recommended, includes the dashboard)
+
+**You need:**
+- Git;
+- Docker:
+  - Windows or macOS: **Docker Desktop**. On Windows, run the commands in a WSL 2 terminal with Docker Desktop's
+    WSL integration turned on.
+  - Linux: Docker Engine with the Compose v2 plugin.
+- Ports 8080 and 8090 free.
+
+1. **Get the code:** `git clone https://github.com/kush300304/Outpost.git && cd Outpost`.
+2. **Start everything:** `docker compose up -d --build --wait`.
+   - The first build compiles every service in containers and takes a few minutes; later starts take seconds.
+   - `--wait` returns once all seven services report healthy. Check with `docker compose ps`.
+3. **Explore:** open http://localhost:8090, or use the `curl` commands above.
+4. **Watch the logs:** `docker compose logs -f edge-1 edge-2 edge-3`.
+   - Services log to standard output, and Docker stores it, so there is no logs folder.
+   - Timestamps are UTC.
+   - `LOG_LEVEL=debug docker compose up -d storage` makes storage log every write.
+5. **Break it on purpose:** `docker compose stop storage`, then read a cached key (`X-Cache: STALE`) and write a
+   new one (`202`, queued). Then `docker compose start storage` and watch the queue drain in the logs.
+6. **Stop:** `docker compose down` keeps the stored data in Docker volumes; `docker compose down -v` deletes it
+   too.
+
+Settings are listed in [`.env.example`](.env.example): cache size, TTL, `stale-if-error`, rate limits, fsync,
+the admin endpoint and `LOG_LEVEL`. Copy it to `.env` to change them.
+
+### Option B: without Docker (Linux or WSL)
+
+**You need:** CMake ≥ 3.16, a C++17 compiler (tested with g++ 12, 13 and 15), and curl. The first configure
+downloads cpp-httplib, nlohmann/json, spdlog and GoogleTest with CMake's FetchContent.
+
+```bash
+cmake -S . -B build && cmake --build build -j     # build every service
+ctest --test-dir build                            # 163 tests, under 10 s
+scripts/localCluster.sh start                     # storage, write-api, edge-1..3, router on the same ports
+scripts/localCluster.sh status
+curl -X PUT localhost:8080/key/hello -d world && curl -i localhost:8080/key/hello
+scripts/localCluster.sh kill storage              # simulate a crash; start it again with: start storage
+scripts/localCluster.sh stop
+```
+
+Logs and write-ahead logs go to `build/localCluster/<service>.log` and `.wal`. The dashboard needs the Docker
+setup, because nginx serves it.
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+- **`port is already allocated`:** another program uses 8080 or 8090. Stop it, or change the published ports in
+  `docker-compose.yml`.
+- **`Cannot connect to the Docker daemon`:** start Docker Desktop. On Windows, enable *Settings → Resources → WSL
+  integration* for your distribution.
+- **A service shows `unhealthy`:** read its log with `docker compose logs <service>`. `docker compose down -v &&
+  docker compose up -d --build --wait` starts from scratch.
+- **The dashboard shows an old version after an update:** reload the page with Ctrl + Shift + R.
+
+</details>
+
+For a guided, step-by-step walk through everything (what each piece is for, what to run, what you should see
+and what it proves), follow **[docs/handsOnTour.md](docs/handsOnTour.md)**.
+
+## How it works
 
 ```mermaid
 flowchart LR
@@ -64,13 +160,22 @@ flowchart LR
 
 | Service | Responsibility |
 |---|---|
-| **router** (8080) | Stateless entry point. Hashes the key onto a ring of healthy edges and forwards the request. Removes an edge after failed health checks and retries once on the new owner. Fans a purge out to every edge. |
-| **edge ×3** | Cache-aside reads with a TTL and standard HTTP caching headers, per-client token buckets, a circuit breaker driven by heartbeats, and a write queue in a local WAL. |
+| **router** (8080) | Stateless entry point. Hashes the key onto a ring of healthy edges and forwards the request. Drops an edge after failed health checks and retries once on the new owner. Fans a purge out to every edge. |
+| **edge ×3** | Cache-aside reads with a TTL and standard HTTP caching headers, per-client token buckets, a circuit breaker driven by heartbeats, and a durable write queue. |
 | **write-api** | Validates requests; the only client of storage. Healthy only when storage answers. |
-| **storage** | The source of truth: a versioned key-value map, durable through its WAL, where concurrent writes share fsyncs. |
-| **dashboard** (8090) | Live view of the cluster, a guided demo and request tools (plain HTML/CSS/JS behind nginx). |
+| **storage** | The source of truth: a versioned key-value map, durable through its write-ahead log, where concurrent writes share fsyncs. |
+| **dashboard** (8090) | A live view of the cluster, a guided demo and request tools (plain HTML/CSS/JS behind nginx). |
 
-### Request flows
+**In one paragraph:**
+- **Normal operation:** a read is answered from the owning edge's cache (`HIT`) or fetched once from the origin
+  (`MISS`). A write is stamped with a version at the edge and stored durably before it is acknowledged.
+- **When the origin fails,** each edge's breaker opens within seconds. Cached values are then served as `STALE`
+  and writes are queued (`202`).
+- **When the origin recovers,** one probe closes the breaker, and each edge replays its queue in order with the
+  original versions. Storage keeps the newest version of every key, so replays are harmless.
+
+<details>
+<summary><b>The request flows in detail</b></summary>
 
 **Read path.**
 1. The router picks the owning edge for the key and forwards the request: the key percent-encoded, the client
@@ -95,22 +200,22 @@ Every answer that carries a value has these headers:
    increasing per edge, and the edge's id.
 2. While the breaker is CLOSED, it forwards the write (`200`, `X-Write-Mode: DIRECT`, and the write's `ETag`).
 3. Storage applies the write only if its version is newer than what it holds.
-4. Storage acknowledges the write only once it is in the WAL on disk. Writes that arrive together share one
-   fsync (group commit).
+4. Storage acknowledges the write only once it is in the write-ahead log on disk. Writes that arrive together
+   share one fsync (group commit).
 
 **Degraded mode.**
 - Every edge heartbeats write-api once a second. Three consecutive failures open the breaker; failed requests
   count too.
 - While the breaker is OPEN:
   - the edge sends the origin **no traffic at all**;
-  - cached values are served as `X-Cache: STALE`, for up to ttl + `stale-if-error` (1 h by default);
-  - writes are appended to the edge's WAL and answered `202 QUEUED`;
+  - cached values are served as `X-Cache: STALE` for up to ttl + `stale-if-error` (1 h by default);
+  - writes are appended to the edge's write-ahead log and answered `202 QUEUED`;
   - reads with no usable cached copy answer `503`.
 
 **Recovery.**
 1. After 5 s the breaker admits exactly **one** half-open probe. Success closes it.
 2. The edge then drains its queue: every write is replayed in order with its **original** version, and only the
-   prefix the origin acknowledged is removed from the WAL.
+   prefix the origin acknowledged is removed from the log.
 3. Writes queued during the drain are never lost. A replay of a write that already landed is a `duplicate`, and
    a replay that lost to a newer write is `superseded`. Either way it is applied at most once and never
    overwrites newer data.
@@ -119,213 +224,97 @@ Every answer that carries a value has these headers:
 edge that is currently off the ring. The answer is `200` when every edge confirmed. When an edge could not be
 reached, the answer is `502` with `complete: false`, and the response lists every edge's answer.
 
-More detail: [docs/architecture.md](docs/architecture.md); edge stats contract:
-[docs/statsApi.md](docs/statsApi.md). The long-form explanation of every module, decision and bug is
+</details>
+
+More detail: [docs/architecture.md](docs/architecture.md), the edge stats contract in
+[docs/statsApi.md](docs/statsApi.md), and the long-form explanation of every module, decision and bug in
 [docs/designWalkthrough.md](docs/designWalkthrough.md).
 
-## Design decisions and trade-offs
+## Design decisions
 
-- **AP/BASE, not ACID.**
-  - **Choice:** during an origin outage Outpost chooses availability. Edges serve stale data and accept writes
-    they cannot commit yet.
-  - **Convergence:** values converge once the origin returns, through versioned last-writer-wins. Caches are
-    refreshed within `CACHE_TTL_MS` (60 s).
-  - **Cost:** a client can read a value that has since been overwritten elsewhere, and two concurrent writers
-    are ordered by edge clocks (same host here; NTP across hosts).
-- **A write-ahead log, hand-built.**
-  - **Use:** both the storage service and every edge queue use `common/wal`. Each record carries a magic
-    number, a CRC over its length and payload, a sequence number, the write's version and writer.
-  - **Recovery:** on open it keeps every valid record, skips a damaged middle record, and truncates only a torn
-    tail.
-- **Group commit, with no added delay.**
-  - **How it works:** a writer appends its record. If no fsync is running, it becomes the *leader*: it fsyncs
-    everything written so far, with the lock released so others can keep appending. Writers that arrive
-    meanwhile wait for the next fsync instead of each paying for their own. Storage no longer holds its map
-    lock across the fsync, so writes can overlap at all. The map only ever holds data that is already durable.
-  - **Result:** at the same load, PUT p50 went from 113.90 to 7.90 ms (see Results).
-  - **Trade-off:** there is no batching window, so a lone write is never delayed, but writes only share a fsync
-    when they overlap. Measured: 2.99 writes per fsync under heavy write load, 1.05–1.33 under light load.
-  - **Failure rule:** a failed fsync marks the log failed and every later write is refused. The kernel may
-    already have dropped the data, so retrying could report a write as durable when it is not.
-- **Versioned writes: idempotency and ordering in one place.** Instead of a separate idempotency-key store,
-  storage keeps the `(version, writerId)` of every value. One comparison makes replays idempotent (`duplicate`)
-  and prevents stale overwrites (`superseded`), and it is durable because it lives in storage's WAL.
-- **Standard HTTP caching instead of custom headers.**
-  - **ETag:** it is the write identity `"<version>-<writerId>"`, which every layer already has. Nothing hashes
-    a body, and two copies with the same tag are the same write.
-  - **What clients get:** `304` saves the body. Revalidation saves the origin from re-sending unchanged
-    values. `stale-if-error` puts a written-down bound on how old degraded data can be.
-  - **Cost:** writer ids are restricted to `[A-Za-z0-9._-]`, because they become part of a header.
-- **Purge goes to every configured edge**, not just those on the ring, because an edge that is briefly off the
-  ring may still hold the key.
-  - The fan-out is sequential, with each call bounded by the edge timeout.
-  - Purge is unauthenticated (trusted network, owner decision).
-- **A separate, stateless router.** Clients shouldn't need to know the ring.
-  - The router derives the ring from configuration plus health checks and persists nothing.
-  - Ownership doesn't depend on insertion order, so a restarted router routes exactly like before.
-  - A dead edge leaves the ring, and only its keys move.
-- **Consistent hashing with 150 virtual nodes per edge.**
-  - Virtual nodes smooth out ownership, but only if the hash spreads similar strings well.
-  - Plain FNV-1a gave a 10 / 56 / 34 % split. Adding the MurmurHash3 `fmix64` finalizer gives 32.0 / 36.2 /
-    31.9 %.
-  - Adding a node now moves 29.3 / 23.0 / 16.4 % of keys (ideal 25 / 20 / 16.7 %).
-- **Breaker thresholds: 3 failures, 1 s heartbeat, 5 s reset.**
-  - An outage is detected within a few seconds: measured 0.7–5.3 s across runs. Each health check can wait up
-    to 1 s on a dead dependency, and failed requests speed detection up.
-  - During recovery the origin sees a single probe, not a thundering herd.
-  - A probe whose result is lost is replaced after the same timeout, so the breaker can't wedge in HALF_OPEN.
-  - Lower thresholds react faster but flap on transient errors; higher ones serve errors for longer.
-- **Logs go to standard output, not files.**
-  - Docker collects them: `docker compose logs -f <service>`.
-  - Compose keeps at most 3 × 10 MB per container. `LOG_LEVEL` sets the level.
-  - Only state changes and errors are logged, never each request. Per-request counters are in `/debug/stats`.
-- **Out of scope:** authentication (trusted network), multi-region routing, deletes (they would need versioned
-  tombstones), strong consistency, WAL compaction.
+Each decision has a short record in [`docs/adr/`](docs/adr/README.md).
 
-## Quick start
-
-Prerequisites: Docker with Compose v2. For building and testing outside Docker you also need CMake ≥ 3.16 and
-a C++17 compiler (tested with g++ 15 locally and 12/13 in containers and CI). The first build downloads the
-dependencies with CMake's FetchContent.
-
-```bash
-docker compose up -d --build --wait     # router, 3 edges, write-api, storage, dashboard
-curl -X PUT localhost:8080/key/hello -d world
-curl -i localhost:8080/key/hello        # X-Cache: HIT, X-Node: edge-N, ETag: "<version>-edge-N"
-curl -i -H 'If-None-Match: "<that ETag>"' localhost:8080/key/hello   # 304 Not Modified, no body
-curl -i -H 'Cache-Control: no-cache' localhost:8080/key/hello        # X-Cache: REVALIDATED
-curl -X POST localhost:8080/purge/key/hello                          # {"complete":true,"edges":[…]}
-docker compose logs -f edge-1           # an edge's log, live
-```
-
-| Port | What |
-|---|---|
-| 8080 | Router: the API (`GET`/`PUT /key/<key>`, `POST /purge/key/<key>`, `/debug/route/<key>`, `/debug/stats`) |
-| 8090 | Dashboard |
-
-Edges (8081–8083), write-api (9090) and storage (9091) are reachable only inside the compose network.
-`scripts/localCluster.sh start` runs the same services on the same ports without Docker (no dashboard). Its
-logs are written to `build/localCluster/<service>.log`.
-
-Settings are listed in [`.env.example`](.env.example): cache size, ttl and `stale-if-error`, rate limits, fsync,
-the admin endpoint and `LOG_LEVEL`.
-
-## How to test it yourself
-
-New to the project? [docs/handsOnTour.md](docs/handsOnTour.md) walks through everything step by step: what each
-piece is for, what to run, what you should see, and what it proves.
-
-| What | Command | A pass looks like |
+| Decision | Why | Trade-off |
 |---|---|---|
-| Unit and in-process tests (163) | `cmake -S . -B build && cmake --build build -j && ctest --test-dir build` | `100% tests passed, 0 tests failed out of 5` |
-| ASan + UBSan | `cmake -S . -B build-asan -DOUTPOST_SANITIZE=address,undefined && cmake --build build-asan -j && ctest --test-dir build-asan` | 100 % passed, no `AddressSanitizer`/`runtime error`/`LeakSanitizer` output |
-| ThreadSanitizer | same with `-B build-tsan -DOUTPOST_SANITIZE=thread` | 100 % passed, no `ThreadSanitizer` warnings |
-| Style rules | `python3 scripts/checkStyle.py && scripts/format.sh --check` | `0 violations` and `all formatted` |
-| Integration (compose) | `scripts/integrationTest.sh` | `integrationTest: 0 failed check(s)` (21 checks) |
-| Chaos (compose) | `scripts/chaosTest.sh` | `RESULT: PASS`, acknowledged writes persisted = acknowledged writes sent |
-| Benchmark (compose) | `scripts/runBenchmark.sh 60s 32`; `RATE=2587 …` for a fixed load; `WORKLOAD=conditional …` for 304s | a new `benchmarks/results/<date>-…/summary.md` |
-| Dashboard acceptance | `scripts/dashboardAcceptance.sh` | `dashboardAcceptance: 0 failed check(s)` (18 checks) |
-| Dashboard in a real browser (Windows + Chrome) | `dashboard/tests/browserClickTest.ps1` (usage in its header) | every guided-demo step `passed`, 0 console errors |
-| Graceful shutdown | `scripts/shutdownTest.sh` | `PASS` for all four services (exit 0 within 2 s of SIGTERM) |
+| **Availability over consistency** during an outage ([ADR 1](docs/adr/0001-availability-over-consistency.md)) | Users keep getting answers. Data converges through versioned last-writer-wins. | A client can read a value that has since changed elsewhere. Staleness is bounded by the 60 s TTL, and by 1 h during an outage. |
+| **Versioned writes** `(version, writerId)` ([ADR 2](docs/adr/0002-versioned-last-writer-wins.md)) | One durable comparison gives idempotent replay (`duplicate`) and no stale overwrites (`superseded`). | Ordering uses edge clocks (one host here; NTP across hosts). No deletes, because they need tombstones. |
+| **A hand-built write-ahead log** ([ADR 3](docs/adr/0003-hand-built-write-ahead-log.md)) | CRC-checked records; recovery keeps valid records, skips a damaged one and cuts a torn tail. | The project owns crash-safety code, and the storage log is never compacted. |
+| **A separate, stateless router** ([ADR 4](docs/adr/0004-stateless-router-service.md)) | Clients don't need the ring. A restart rebuilds the same ring, and a dead edge's keys move alone. | One extra hop, and the edge list is static configuration. |
+| **Consistent hashing, 150 virtual nodes** ([ADR 5](docs/adr/0005-consistent-hashing-virtual-nodes.md)) | The `fmix64` finalizer turned a 10 / 56 / 34 % split into 32.0 / 36.2 / 31.9 %. A fourth edge moves 29.3 % of keys (ideal 25 %). | O(log n) lookups over 450 points. |
+| **Breaker: 3 failures, 1 s heartbeat, 5 s reset, one probe** ([ADR 6](docs/adr/0006-circuit-breaker-thresholds.md)) | Outages are detected in 0.7–5.3 s (measured), and a recovering origin sees one probe, not a stampede. | Lower thresholds flap on blips; higher ones serve errors longer. |
+| **Group commit, no batching window** ([ADR 7](docs/adr/0007-group-commit-without-window.md)) | PUT p50 113.90 → 7.90 ms at the same load, still durable. A failed fsync stops the log. | Writes share an fsync only when they overlap: 2.99 per fsync under heavy load, about 1 under light load. |
+| **Standard HTTP caching; the write identity is the ETag** ([ADR 8](docs/adr/0008-standard-http-caching-and-purge.md)) | Any HTTP client or cache can revalidate. Purge reaches every edge, even one off the ring. | Writer ids are limited to `[A-Za-z0-9._-]`. Purge is one key at a time and best-effort for an unreachable edge. |
 
-**The chaos test**:
-- **Load:** runs continuous reads of 200 warm keys and a stream of unique writes through the router.
-- **Kills and restarts:** first storage, then write-api, then an edge, killed 200 ms into replaying its queue.
-- **Pass criteria:**
-  - every write that got `200` or `202` must be in storage with its exact value;
-  - no warm read may fail during the outages.
+Logs go to standard output, not files. Only state changes and errors are logged, never each request.
+**Out of scope:** authentication (trusted network, see [SECURITY.md](SECURITY.md)), multi-region routing,
+deletes, strong consistency and log compaction.
 
-CI runs the unit tests, both sanitizer builds, the style checks and the compose integration test on every push
-(`.github/workflows/ci.yml`). The full manual checklist is in [docs/testing.md](docs/testing.md).
-
-## Using the dashboard
+## The dashboard
 
 Open **http://localhost:8090**. Everything on it is live: the page polls every service once a second.
 
-- **How a request flows:**
-  - shows Client → Router → edge-1..3 → write-api → storage, each labelled healthy, degraded or down;
-  - when you send a request, its path lights up, with the result on the edge that served it (HIT, MISS,
-    REVALIDATED, 304, STALE, QUEUED);
-  - a sentence underneath explains what happened.
-- **Guided demo:** *Run all steps* plays the whole story in about 10 seconds. Each step checks the real
-  response or the live cluster state and turns green only if the cluster actually did it:
+- **How a request flows:** Client → Router → edge-1..3 → write-api → storage, each labelled healthy, degraded or
+  down. Send a request and its path lights up, with the result on the edge that served it and a sentence
+  explaining what happened.
+- **Guided demo:** *Run all steps* plays the whole story in about 10 seconds:
   1. write;
   2. purge;
-  3. cold MISS;
-  4. warm HIT;
-  5. 304;
+  3. cold `MISS`;
+  4. warm `HIT`;
+  5. `304`;
   6. simulated outage, with every breaker OPEN;
-  7. STALE read;
-  8. QUEUED write;
-  9. recovery: a REVALIDATED read proves storage holds the queued write.
-- **Inside each edge:** hit rate, cached keys, breaker, queued writes, stale serves, revalidations, 304s,
-  purges and rate limiting. Hover a label for what it means.
-- **Router and origin:** how requests spread over the edges, and how many writes share each fsync.
-- **Tools:**
-  - send any GET / PUT / Purge, optionally with `If-None-Match` or `no-cache`, and see every caching header;
-  - a simulated-outage switch (write-api answers 503; no container is stopped);
-  - a small load generator. Its latencies are browser-measured, not a benchmark.
-- **Event log:** breaker changes, queue drains, rate limiting and purges from all edges, filterable. A glossary
-  at the bottom explains every term.
+  7. `STALE` read;
+  8. `QUEUED` write;
+  9. recovery, where a `REVALIDATED` read proves storage holds the queued write.
 
-Light and dark themes follow the system setting (or the *Theme* button), and the page works at phone width.
+  Each step checks the real response or the live state, and turns green only if the cluster really did it.
+- **Panels and tools:**
+  - per-edge cards (hit rate, breaker, queue, revalidations, rate limiting), with every label explained;
+  - router and origin cards (how requests spread; writes per fsync);
+  - a request tester with `If-None-Match`, `no-cache` and purge;
+  - a simulated-outage switch;
+  - a small load generator;
+  - a filterable event log, and a glossary.
 
 <p>
-<img src="docs/images/dashboardDark.png" alt="Dashboard in the dark theme after a request" width="72%">
-<img src="docs/images/dashboardPhone.png" alt="Dashboard at phone width" width="24%">
+<img src="docs/images/dashboardDark.png" alt="The dashboard in the dark theme after a request" width="72%">
+<img src="docs/images/dashboardPhone.png" alt="The dashboard at phone width" width="24%">
 </p>
 
 ## Results
 
-All numbers come from real runs on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2
-with Docker Desktop 29.9.3. Raw output is in `docs/gates/` and `benchmarks/results/`.
+Measured on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2 with Docker Desktop 29.9.3.
+Raw output is in [`benchmarks/results/`](benchmarks/results/README.md) and [`docs/gates/`](docs/gates/README.md),
+and the commit hashes quoted there are commits in this repository. A
+[final check from a fresh clone](docs/finalCheck.md) reran everything after the last code change.
 
-Commit hashes quoted in those records are commits in this repository. Each phase of the work is a branch
-merged into `main` (see [docs/gates/README.md](docs/gates/README.md)).
+**Chaos test**: continuous reads and writes through the router while storage, then write-api, are killed and
+restarted, and then an edge is killed 200 ms into replaying its queue.
 
-A **final check from a fresh clone** reran everything after the last code change ([docs/finalCheck.md](docs/finalCheck.md)):
-- 163 tests, sanitizers clean;
-- integration 21/21, dashboard 18/18, browser 9/9;
-- chaos 2834/2834 writes persisted;
-- CI green.
+| Measure | Gate run (`2026-11-21T105727Z`) | Final check (`2026-11-21T123241Z`) |
+|---|---|---|
+| Acknowledged writes (200/202) persisted with the exact value | **3448 / 3448** | **2834 / 2834** |
+| Warm reads during the storage and write-api outages | 1689, **0 failed** (1352 `STALE`) | 1569, **0 failed** (1173 `STALE`) |
+| Replayed writes recognised as duplicates after the mid-drain edge kill | 50, none applied twice | 59, none applied twice |
 
-Its benchmarks came out 10–20 % slower than the runs quoted below, on the same laptop with the same code (for
-example PUT p50 8.76 ms instead of 7.90 ms at 2587 requests/s). Treat single numbers from a laptop as ±20 %;
-the comparisons hold in every run.
-
-**Tests**
-- **Unit and in-process:** 163 tests in 5 suites, all passing (`docs/gates/phaseJ.md`).
-- **Sanitizers:** ASan + UBSan and TSan runs pass every suite with 0 sanitizer reports. Earlier runs found a
-  null-pointer `fwrite`, a data race on request counters, a test `shared_ptr` cycle and a temp-file reuse bug,
-  all fixed.
-- **Browser:** the dashboard's click test passes all nine guided-demo steps in headless Chrome, with 0 console
-  errors. Its first run found a real bug: `fetch(…, {cache: 'no-store'})` adds `Cache-Control: no-cache`, so
-  every dashboard read was being revalidated. Fixed.
-
-**Chaos test** (`benchmarks/results/2026-11-21T105727Z-chaos/`)
-
-| Measure | Result |
-|---|---|
-| Writes acknowledged (200/202) / persisted with exact value | **3448 / 3448** |
-| Warm reads during the storage and write-api outages | 1689, **0 failed**, 1352 served `STALE` |
-| Time for all breakers to open | 0.68 s (storage killed), 1.90 s (write-api killed) |
-| Edge killed 200 ms into draining 340 queued writes | storage recognised **50 replayed duplicates**; none applied twice |
-
-**Benchmark: durable writes with group commit** (details in [docs/benchmarks.md](docs/benchmarks.md))
-
-k6 ran through the router: 90 % GET / 10 % PUT over 1000 keys, with every write fsync'd before it is
-acknowledged. *requests/s* is the count during the 60 s measured phase. Older gate files quote k6's whole-run
-average, which includes a ~6 s setup phase and is about 10 % lower.
-
-*At the same load*: the old build ran at 2587 requests/s with 32 clients sending as fast as they could. The new
-build was then replayed at exactly that rate (`RATE=2587`).
+**Group commit, at the same load**: 2587 requests/s, 90 % GET / 10 % PUT over 1000 keys, every write fsync'd:
 
 | Request | Before: one fsync per write | After: group commit |
 |---|---|---|
 | GET, cache hit, p50 / p95 / p99 | 0.96 / 1.24 / 1.64 ms | 0.98 / 1.36 / 2.45 ms |
 | PUT, p50 / p95 / p99 | 113.90 / 123.73 / 214.76 ms | **7.90 / 10.82 / 13.92 ms** |
 
-*At full speed* (32 clients, each sending its next request as soon as the last one returns):
+**HTTP caching**: 4 KiB values; each client sends the ETag it last saw:
+
+| PUT share | Conditional reads answered `304` | `304` p50 | `REVALIDATED` p50 | Body bytes `304` / `200` |
+|---|---|---|---|---|
+| 1 % | **77.4 %** | 2.94 ms | 5.01 ms | **0 / 4126** |
+| 10 % | 26.2 % | 3.26 ms | 5.79 ms | 0 / 4126 |
+
+<details>
+<summary><b>More results and how to read them</b></summary>
+
+**At full speed** (32 clients, each sending its next request as soon as the last one returns):
 
 | | Before | After (3 runs) |
 |---|---|---|
@@ -337,55 +326,87 @@ build was then replayed at exactly that rate (`RATE=2587`).
 - **Writes:** before, each write waited for its own fsync behind a lock, so writers queued. Now writes that
   arrive together share one.
 - **Reads at the same load** are unchanged at the median.
-- **Reads at full speed:** hits got slower because the machine now serves 2.6× more requests. A run with fsync
-  off showed a similar p50 (3.33 ms at 7655 requests/s). At this load the cache-hit **p99 (11.29 ms) is above the
-  10 ms target**; p50 and p95 are below it.
-- **What the benchmark found:** two real defects, both fixed with regression tests:
-  - Nagle's algorithm added ~40 ms to every keep-alive request;
-  - idle keep-alive connections could starve the HTTP worker pool.
+- **Reads at full speed got slower** because the machine serves 2.6× more requests. A run with fsync off showed a
+  similar p50 (3.33 ms at 7655 requests/s). At this load the cache-hit **p99 (11.29 ms) is above the 10 ms
+  target**; p50 and p95 are below it.
+- **The 304 share depends on churn:** how often a key changes between two visits by the same client. Both runs
+  match a simple model within a few points.
+- **The saving is bandwidth, not latency:** on one machine a 304 is only 0.2 ms faster, but in the 1 % run 304s
+  avoided sending about 1.39 GB of bodies in 60 s.
+- **What the benchmarks found:** two real defects, both fixed with regression tests. Nagle's algorithm added
+  ~40 ms to every keep-alive request, and idle keep-alive connections could starve the HTTP worker pool.
+- **Units:** *requests/s* is the count during the 60 s measured phase. Older gate files quote k6's whole-run
+  average, which includes a ~6 s setup phase and is about 10 % lower.
+- **Variance:** the final check's benchmarks came out 10–20 % slower than the gate runs, on the same laptop with
+  the same code (for example PUT p50 8.76 ms instead of 7.90 ms at 2587 requests/s). Treat single laptop
+  numbers as ±20 %; every comparison held in every run.
 
-**Benchmark: HTTP caching** (`WORKLOAD=conditional`: 4 KiB values; each client sends the ETag it last saw)
+Details: [docs/benchmarks.md](docs/benchmarks.md).
 
-| PUT share | Conditional reads answered 304 | 304 p50 | REVALIDATED p50 | Body bytes 304 / 200 |
-|---|---|---|---|---|
-| 1 % (`2026-11-21T113220Z`) | **77.4 %** | 2.94 ms | 5.01 ms | **0 / 4126** |
-| 10 % (`2026-11-21T113028Z`) | 26.2 % | 3.26 ms | 5.79 ms | 0 / 4126 |
+</details>
 
-- **What drives the 304 share:** how often a key changes between two visits by the same client. More writes
-  mean fewer 304s. Both runs match a simple model within a few points.
-- **The saving is bandwidth, not latency.** On one machine a 304 is only 0.2 ms faster. But in the 1 % run,
-  304s avoided sending about 1.39 GB of bodies in 60 s.
-- **Revalidation:** no-cache reads were confirmed by a `304` from the origin 99.8–100 % of the time.
+## Testing
+
+| What | Command | A pass looks like |
+|---|---|---|
+| Unit and in-process tests (163) | `cmake -S . -B build && cmake --build build -j && ctest --test-dir build` | `100% tests passed, 0 tests failed out of 5` |
+| ASan + UBSan | `cmake -S . -B build-asan -DOUTPOST_SANITIZE=address,undefined && cmake --build build-asan -j && ctest --test-dir build-asan` | 100 % passed, no sanitizer reports |
+| ThreadSanitizer | same, with `-B build-tsan -DOUTPOST_SANITIZE=thread` | 100 % passed, no `ThreadSanitizer` warnings |
+| Style | `python3 scripts/checkStyle.py && scripts/format.sh --check` | `0 violations` and `all formatted` |
+| Integration (Compose) | `scripts/integrationTest.sh` | `integrationTest: 0 failed check(s)` (21 checks) |
+| Chaos (Compose) | `scripts/chaosTest.sh` | `RESULT: PASS`: acknowledged writes persisted = sent |
+| Benchmark (Compose) | `scripts/runBenchmark.sh 60s 32`; `RATE=2587 …` for a fixed load; `WORKLOAD=conditional …` for 304s | a new `benchmarks/results/<date>-…/summary.md` |
+| Dashboard acceptance | `scripts/dashboardAcceptance.sh` | `dashboardAcceptance: 0 failed check(s)` (18 checks) |
+| Dashboard in a real browser (Windows + Chrome) | `dashboard/tests/browserClickTest.ps1` | every guided-demo step `passed`, 0 console errors |
+| Graceful shutdown | `scripts/shutdownTest.sh` | `PASS` for all four services |
+
+CI runs the unit tests, both sanitizer builds, the style checks and the Compose integration test on every push.
+The manual checklist is in [docs/testing.md](docs/testing.md).
+
+## Documentation
+
+| Read this | When you want |
+|---|---|
+| [docs/handsOnTour.md](docs/handsOnTour.md) | A guided, step-by-step tour: run each piece and see what it proves |
+| [docs/designWalkthrough.md](docs/designWalkthrough.md) | The long-form explanation of every module, decision and bug |
+| [docs/architecture.md](docs/architecture.md) | The components, request paths, durability and consistency model |
+| [docs/adr/](docs/adr/README.md) | One short record per major design decision |
+| [docs/benchmarks.md](docs/benchmarks.md) | How the benchmarks were run, and every result |
+| [docs/statsApi.md](docs/statsApi.md) | The edges' `/debug/stats` contract (a test enforces it) |
+| [docs/testing.md](docs/testing.md) | The manual test checklist, including the dashboard |
+| [docs/gates/](docs/gates/README.md), [docs/finalCheck.md](docs/finalCheck.md) | The raw output behind every number |
+| [CHANGELOG.md](CHANGELOG.md) | What is in each release |
 
 ## Known limitations and roadmap
+
+<details>
+<summary><b>Limitations</b></summary>
 
 - **Write ordering:** depends on wall clocks (fine on one host, needs NTP across hosts). A hybrid logical
   clock would remove that.
 - **Group commit:** only helps when writes overlap (1.05 writes per fsync under light load). A short batching
   window would batch more, but would add latency to every write.
-- **Storage WAL growth:** the storage WAL grows without compaction, and start-up replays it (about 3.7 s for
-  300,000 records in a Debug build).
-- **HTTP caching scope:**
-  - conditional requests use ETags only, not `If-Modified-Since`;
-  - `Age` is per edge;
-  - purge removes one key at a time and is best-effort for an unreachable edge.
-- **No deletes:** v1 has no deletes, because they need versioned tombstones.
+- **Storage log growth:** the storage write-ahead log grows without compaction, and start-up replays it (about
+  3.7 s for 300,000 records in a Debug build).
+- **HTTP caching scope:** conditional requests use ETags only, not `If-Modified-Since`; `Age` is per edge; purge
+  removes one key at a time and is best-effort for an unreachable edge.
+- **No deletes:** they need versioned tombstones.
 - **Breaker trigger:** consecutive failures only, no error-rate window.
-- **Membership changes:** the router's edge list is static configuration. Adding an edge means a config change
-  and a router restart (about 1/(N+1) of keys move).
-- **Edge failover cost:**
-  - When an edge dies, the first request for one of its keys waits about 1 s (one bounded DNS attempt) before
-    the router fails over (measured 1017 ms), and health checks drop the edge after 1.8 s.
-  - A request already in flight to the edge at that instant fails. The router retries only refused
-    connections, not ones cut mid-response: 11 of 267 reads in the final chaos run's edge-kill window.
+- **Membership:** the router's edge list is static configuration. Adding an edge means a config change and a
+  router restart (about 1/(N+1) of keys move).
+- **Edge failover:** when an edge dies, the first request for one of its keys waits about 1 s (one bounded DNS
+  attempt) before the router fails over, and health checks drop the edge after 1.8 s. A request already in
+  flight to the dying edge fails (11 of 267 reads in the final chaos run's edge-kill window).
 - **Logs:** plain text, without a request id that follows one request across services.
 
-v2 ideas (not built):
-- structured JSON logs with a request id carried across hops;
+</details>
+
+**Ideas for v2:**
+- structured JSON logs with a request id across hops;
 - purge by tag or prefix;
 - Kafka cache invalidation between edges;
 - gRPC;
-- Prometheus/Grafana;
+- Prometheus and Grafana;
 - gossip-based membership;
 - Kubernetes;
 - a Terraform cloud deployment.
@@ -398,7 +419,7 @@ common/      hand-built primitives: consistentHash, lruCache, tokenBucket, circu
 router/      consistent-hash router service
 edge/        edge service
 write-api/   validation service in front of storage
-storage/     versioned key-value store with WAL durability
+storage/     versioned key-value store with write-ahead-log durability
 dashboard/   static dashboard (ES modules in src/), nginx config, browser click test in tests/
 scripts/     localCluster, integrationTest, chaosTest, runBenchmark, dashboardAcceptance, seedData,
              shutdownTest, checkStyle, format
@@ -407,5 +428,5 @@ docs/        architecture, design walkthrough, hands-on tour, stats API, benchma
              decision records (adr/), gate records, final checks, images
 ```
 
-Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Security model and reporting: [SECURITY.md](SECURITY.md).
-Licence: [MIT](LICENSE).
+**Contributing:** see [CONTRIBUTING.md](CONTRIBUTING.md). **Security model and reporting:**
+[SECURITY.md](SECURITY.md). **Licence:** [MIT](LICENSE).
