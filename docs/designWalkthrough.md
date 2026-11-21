@@ -590,7 +590,8 @@ build in the top-level `CMakeLists.txt`:
   - 429s under a burst;
   - that only the router port is reachable;
   - HTTP caching end to end: validators on a HIT, `304` for a matching `If-None-Match`, a `no-cache` read
-    revalidated by the origin's `304`, and purge on all three edges followed by a MISS (21 checks).
+    revalidated by the origin's `304`, and purge on all three edges followed by a MISS. The 22 checks also time
+    a purge sent without a request body.
 - **Dashboard.** `scripts/dashboardAcceptance.sh` runs the demo sequence through the dashboard's own proxy
   paths (18 checks). `dashboard/tests/browserClickTest.ps1` clicks through it in a real browser.
 - **Chaos test** (`scripts/chaosTest.sh`). Continuous reads of 200 warm keys and a stream of unique writes

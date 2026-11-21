@@ -4,8 +4,12 @@
 /// Each FakeEdge is an httplib server on an ephemeral port that answers /key requests with its
 /// own id in X-Node and records the decoded key, body and X-Forwarded-For it received.
 
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
 #include <httplib.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
@@ -403,4 +407,38 @@ TEST_F(RouterFixture, PurgeReportsAnEdgeItCouldNotReach)
         EXPECT_EQ(edge["reached"].get<bool>(), edge["nodeId"] != "edge-2") << edge.dump();
     }
     EXPECT_EQ(reached, 2);
+}
+
+TEST_F(RouterFixture, PurgeWithoutContentLengthAnswersWithoutWaitingForABody)
+{
+    // `curl -X POST` sends no Content-Length; in HTTP/1.1 that means the request has no body.
+    struct Socket
+    {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        ~Socket()
+        {
+            if (fd >= 0)
+            {
+                ::close(fd);
+            }
+        }
+    } sock;
+    ASSERT_GE(sock.fd, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<uint16_t>(port_));
+    ::inet_pton(AF_INET, "127.0.0.1", &address.sin_addr);
+    ASSERT_EQ(::connect(sock.fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)), 0);
+    timeval timeout{3, 0};
+    ::setsockopt(sock.fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const std::string request = "POST /purge/key/k HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    auto started = std::chrono::steady_clock::now();
+    ASSERT_EQ(::send(sock.fd, request.data(), request.size(), 0),
+              static_cast<ssize_t>(request.size()));
+    char buffer[512];
+    ssize_t received = ::recv(sock.fd, buffer, sizeof(buffer), 0);
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    ASSERT_GT(received, 0) << "no answer within 3 s";
+    EXPECT_EQ(std::string(buffer, static_cast<std::size_t>(received)).rfind("HTTP/1.1 200", 0), 0u);
+    EXPECT_LT(elapsed, 1s);
 }

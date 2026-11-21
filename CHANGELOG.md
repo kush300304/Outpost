@@ -3,6 +3,20 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [semantic versioning](https://semver.org/).
 
+## [1.0.1] - 2026-11-21
+
+### Fixed
+- **Purge waited 5 s when a client sent no body.** `POST /purge/key/<k>` without a `Content-Length` (what
+  `curl -X POST` sends) waited 5 s for a request body, until the HTTP library's read timeout. It now answers at
+  once (about 30 ms), as HTTP/1.1 requires for a request with no length.
+- **The integration test's rate-limit check depended on machine speed.** It failed on a slow CI runner whose 400
+  separate `curl` processes took 2.5 s, long enough for the token bucket to refill. It now sends 600 requests
+  from one `curl` over keep-alive connections, in about 0.15 s, and prints how long the burst took.
+
+### Added
+- An integration check that a purge without a request body answers in under 1 s (22 checks in total).
+- A router test that sends exactly that request over a raw socket.
+
 ## [1.0.0] - 2026-11-21
 
 First public release.

@@ -248,6 +248,10 @@ curl -s -o /dev/null -w '%{http_code}\n' -H 'X-Forwarded-For: 198.51.100.8' loca
 **You should see:** some `429` (Too Many Requests) among the first client's answers. The second client gets a
 normal answer (here `404`, the key was never written).
 
+If you see no `429` at all, your machine took longer than about 2 s to launch the 400 `curl` processes, and the
+bucket refilled meanwhile (200 + 100 per second). Run it again, or watch `scripts/integrationTest.sh` do it: it
+sends 600 requests from a single `curl` in about 0.15 s.
+
 **What it proves:** G4. Each client has its own token bucket: a burst of 200, refilled at 100 per second, per
 edge.
 
@@ -369,7 +373,7 @@ storage?
 
 **Do** (each takes from 20 seconds to 3 minutes):
 ```bash
-scripts/integrationTest.sh          # 21 checks: routing, caching, purge, rate limit, ports
+scripts/integrationTest.sh          # 22 checks: routing, caching, purge, rate limit, ports
 scripts/dashboardAcceptance.sh      # 18 checks through the dashboard's proxy
 scripts/shutdownTest.sh             # every service stops cleanly on SIGTERM
 scripts/chaosTest.sh                # kills storage, write-api and an edge under load
