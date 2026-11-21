@@ -7,13 +7,16 @@
 ///   GET  /health            → 200 with the number of edges currently on the ring
 ///   GET  /key/:id           → forwarded to the edge that owns the key
 ///   PUT  /key/:id           → forwarded to the edge that owns the key
+///   POST /purge/key/:id     → POST /purge/key/:id on every configured edge; 200 with each edge's
+///                             answer when all answered, 502 (complete: false) when one did not
 ///   GET  /debug/route/:id   → {"key","node"}: the edge that owns the key right now
 ///   GET  /debug/stats       → per-edge health, ring membership and routed counts
 ///
 /// Routing: a common::ConsistentHashRing holds the edges that are currently reachable. The owner
 /// of a key receives the request with the key percent-encoded, the client appended to
-/// X-Forwarded-For, and the body for PUT; its status, body and X-Cache, X-Node, X-Write-Mode and
-/// Retry-After headers are returned unchanged.
+/// X-Forwarded-For, the client's If-None-Match and Cache-Control, and the body for PUT; its status,
+/// body and X-Cache, X-Node, X-Write-Mode, Retry-After, ETag, Last-Modified, Age and Cache-Control
+/// headers are returned unchanged (a 304 has no body).
 ///
 /// Membership: every configured edge starts on the ring. A background thread checks each edge's
 /// /health every healthCheckInterval, removes an edge after unhealthyThreshold consecutive
@@ -106,6 +109,7 @@ private:
     std::map<std::string, std::unique_ptr<EdgeStatus>> edges_;  ///< Fixed after construction.
     std::atomic<uint64_t> requests_{0};
     std::atomic<uint64_t> failovers_{0};
+    std::atomic<uint64_t> purges_{0};
 
     std::thread healthThread_;
     std::mutex joinMutex_;

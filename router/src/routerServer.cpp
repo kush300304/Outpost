@@ -49,6 +49,35 @@ RouterServer::RouterServer(const RouterConfig& config) : config_(config), ring_(
     server_.Put(R"(/key/(.+))",
                 [this](const httplib::Request& req, httplib::Response& res) { forward(req, res); });
 
+    // Purge goes to every configured edge, not only those on the ring: an edge that is off the
+    // ring may still hold the key and serve it once it rejoins.
+    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req,
+                                              httplib::Response& res) {
+        std::string key = req.matches[1].str();
+        purges_.fetch_add(1, std::memory_order_relaxed);
+        json results = json::array();
+        bool complete = true;
+        for (const auto& [id, edge] : edges_)
+        {
+            httplib::Client cli(edge->node.host, edge->node.port);
+            cli.set_address_family(AF_INET);
+            cli.set_url_encode(false);
+            cli.set_connection_timeout(config_.edgeTimeout);
+            cli.set_read_timeout(config_.edgeTimeout);
+            auto result =
+                cli.Post("/purge/key/" + common::encodePathSegment(key), "", "text/plain");
+            bool reached = result && result->status == 200;
+            json answer = reached ? json::parse(result->body, nullptr, false) : json();
+            bool purged = answer.is_object() && answer.value("purged", false);
+            complete = complete && reached;
+            results.push_back({{"nodeId", id}, {"reached", reached}, {"purged", purged}});
+        }
+        res.status = complete ? 200 : 502;
+        res.set_content(
+            json({{"key", key}, {"complete", complete}, {"edges", results}}).dump(),
+            "application/json");
+    });
+
     server_.Get(R"(/debug/route/(.+))",
                 [this](const httplib::Request& req, httplib::Response& res) {
                     std::string key = req.matches[1].str();
@@ -69,6 +98,7 @@ RouterServer::RouterServer(const RouterConfig& config) : config_(config), ring_(
         json body = {{"service", "router"},
                      {"requests", requests_.load()},
                      {"failovers", failovers_.load()},
+                     {"purges", purges_.load()},
                      {"virtualNodes", ring_.virtualNodeCount()},
                      {"edges", edges}};
         res.set_content(body.dump(2), "application/json");
@@ -130,6 +160,13 @@ void RouterServer::forward(const httplib::Request& req, httplib::Response& res)
     std::string forwardedFor = req.get_header_value("X-Forwarded-For");
     forwardedFor = forwardedFor.empty() ? req.remote_addr : forwardedFor + ", " + req.remote_addr;
     httplib::Headers headers = {{"X-Forwarded-For", forwardedFor}};
+    for (const char* name : {"If-None-Match", "Cache-Control"})
+    {
+        if (req.has_header(name))
+        {
+            headers.emplace(name, req.get_header_value(name));
+        }
+    }
     std::string contentType = req.get_header_value("Content-Type");
     contentType = contentType.empty() ? "text/plain" : contentType;
 
@@ -157,7 +194,8 @@ void RouterServer::forward(const httplib::Request& req, httplib::Response& res)
                 delivered = true;
                 edge.routed.fetch_add(1, std::memory_order_relaxed);
                 res.status = result->status;
-                for (const char* name : {"X-Cache", "X-Node", "X-Write-Mode", "Retry-After"})
+                for (const char* name : {"X-Cache", "X-Node", "X-Write-Mode", "Retry-After", "ETag",
+                                         "Last-Modified", "Age", "Cache-Control"})
                 {
                     if (result->has_header(name))
                     {
@@ -165,7 +203,10 @@ void RouterServer::forward(const httplib::Request& req, httplib::Response& res)
                     }
                 }
                 std::string type = result->get_header_value("Content-Type");
-                res.set_content(result->body, type.empty() ? "application/json" : type);
+                if (result->status != 304)
+                {
+                    res.set_content(result->body, type.empty() ? "application/json" : type);
+                }
             }
             else if (result.error() == httplib::Error::Connection)
             {
