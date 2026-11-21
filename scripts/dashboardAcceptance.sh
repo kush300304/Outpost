@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # @file dashboardAcceptance.sh
 # Runs the dashboard spec's acceptance sequence through the dashboard's own proxy paths (the same
-# requests the page makes): cold miss, warm hit, simulated outage on, breaker OPEN and STALE reads,
-# a queued write, outage off, breaker CLOSED and the queue drained, events in the edge's log.
+# requests the page makes): the page and its modules are served, cold miss, warm hit, a 304 for a
+# conditional read, purge then MISS, simulated outage on, breaker OPEN and STALE reads, a queued write,
+# outage off, breaker CLOSED and the queue drained, events in the edge's log.
 #
 # Usage: scripts/dashboardAcceptance.sh      (DASHBOARD=http://localhost:8090 by default)
 # Exit status is the number of failed checks.
@@ -51,6 +52,18 @@ docker compose up -d --wait >/dev/null 2>&1 || { echo "FAIL  docker compose up";
 curl -s -o /dev/null -X POST -H 'Content-Type: application/json' -d '{"enabled":false}' \
     "$DASHBOARD/origin-admin/outage"
 check "dashboard page is served" "$([[ "$(curl -s -o /dev/null -w '%{http_code}' "$DASHBOARD/")" == 200 ]] && echo true)"
+modules=""
+for module in main api live format flowDiagram guidedDemo panels controls; do
+    info=$(curl -s -o /dev/null -w '%{http_code} %{content_type}' "$DASHBOARD/src/$module.js")
+    [[ "$info" == "200 application/javascript"* ]] || modules="$modules $module($info)"
+done
+check "all 8 scripts are served as JavaScript modules${modules:+, not:$modules}" "$([[ -z "$modules" ]] && echo true)"
+revalidate=$(curl -s -D - -o /dev/null "$DASHBOARD/src/main.js" | tr -d '\r' | headerValue Cache-Control)
+check "static files are revalidated on every load (Cache-Control: $revalidate)" "$([[ "$revalidate" == no-cache ]] && echo true)"
+storageStats=$(curl -s "$DASHBOARD/storage/debug/stats" | field '"wal" in d and "totalKeys" in d')
+storageKey=$(curl -s -o /dev/null -w '%{http_code}' "$DASHBOARD/storage/key/anything")
+check "storage stats are proxied ($storageStats) but its keys are not ($storageKey)" \
+    "$([[ "$storageStats" == True && "$storageKey" == 404 ]] && echo true)"
 
 # 1. Cold miss, then warm hit.
 cold=$(headers "$DASHBOARD/router/key/$key")
@@ -63,6 +76,13 @@ check "PUT is written directly ($(echo "$put" | headerValue X-Write-Mode) via $o
 warm=$(headers "$DASHBOARD/router/key/$key")
 check "warm GET is a HIT ($(echo "$warm" | headerValue X-Cache))" \
     "$([[ "$(echo "$warm" | headerValue X-Cache)" == HIT ]] && echo true)"
+etag=$(echo "$warm" | headerValue ETag)
+conditional=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" "$DASHBOARD/router/key/$key")
+check "conditional GET with the ETag is 304 ($conditional)" "$([[ "$conditional" == 304 ]] && echo true)"
+purged=$(curl -s -X POST "$DASHBOARD/router/purge/key/$key" | field 'str(d["complete"]).lower()')
+afterPurge=$(headers "$DASHBOARD/router/key/$key" | headerValue X-Cache)
+check "purge through the dashboard proxy (complete=$purged), then the read is a $afterPurge" \
+    "$([[ "$purged" == true && "$afterPurge" == MISS ]] && echo true)"
 
 # 2. Simulated outage on: every breaker opens, cached reads are STALE, writes queue.
 on=$(curl -s -X POST -H 'Content-Type: application/json' -d '{"enabled":true}' "$DASHBOARD/origin-admin/outage")

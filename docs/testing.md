@@ -43,39 +43,52 @@ Start the cluster with `docker compose up -d --build --wait`. Use a fresh key, o
 
 ## 3. Dashboard in a browser (http://localhost:8090)
 
-Acceptance, from the UI alone:
-- [ ] The page loads; the header reads `Live · updated … · 3/3 edges answering` and ticks every second.
-- [ ] Topology shows router, edge-1..3 and origin as **healthy**. The state is written as text, not only shown
-      as colour.
-- [ ] Request tester: `GET` a new key gives `404` / `MISS`; `PUT` it gives `200` / `DIRECT` and names the edge;
-      `GET` it again gives `HIT`.
-- [ ] *Start simulated outage*: the button reads *Stop simulated outage* and the origin shows
-      **down (simulated)**; within about 3 s every edge shows **degraded (OPEN)** and the event log shows
-      `breaker CLOSED -> OPEN`.
-- [ ] `GET` the key gives `200` / `STALE`.
-- [ ] `PUT` another key gives `202` / `QUEUED`; that edge's *Queued writes* shows 1.
-- [ ] *Stop simulated outage*: within about 6 s the edges show **healthy**, the queue returns to 0, and the
-      event log shows `OPEN -> HALF_OPEN`, `HALF_OPEN -> CLOSED`, `reconcile: started`, `reconcile: finished`.
-- [ ] Mini load generator with N=300, C=6, K=50: the counts add up to 300, the p50/p95/p99 values are shown,
-      and the label says *browser-measured, not a benchmark*. Run it again with N=2000 and the 429 count becomes
-      non-zero (per-client rate limit).
+Use a fresh tab (or reload once) after `docker compose up --build`; nginx tells the browser to revalidate the
+page and its scripts, so an older cached version is never mixed with a newer one.
+
+Guided demo, from the UI alone:
+- [ ] The page loads; the header pill reads `Live · <time> · 3/3 edges answering` and ticks every second.
+- [ ] *How a request flows* shows Client → Router → edge-1..3 → write-api → storage, every node **healthy**,
+      with the state written as text, not only shown as colour. storage shows its key count.
+- [ ] *Run all steps*: the nine steps run in order and each turns into a green ✓ with an explanation:
+      1 WRITTEN (path lights up to storage), 2 PURGED, 3 MISS, 4 HIT, 5 304 Not Modified, 6 breakers OPEN
+      (about 3 s), 7 STALE, 8 QUEUED, 9 REVALIDATED with the queued value (about 5 s). While it runs, the flow
+      diagram shows each request's path and result, the edge cards show the breaker opening and the queue
+      rising and draining, and the event log shows the breaker and reconcile events.
+- [ ] *Start over with a new key* clears the steps and shows a new demo key; running a single step (for
+      example step 4 right after a reset) fails with a red ! and says what it got instead.
+
+Tools:
+- [ ] *Send a request*: `GET` of a new key gives MISS · 404; `PUT` gives WRITTEN and names the edge; `GET` gives
+      HIT and lists `ETag`, `Age`, `Cache-Control`, `Last-Modified`; ticking *If-None-Match* gives
+      304 Not Modified; ticking *no-cache* gives REVALIDATED; *Purge* gives PURGED, then `GET` gives MISS.
+- [ ] *Simulated origin outage* switch: on → write-api shows **outage (simulated)** and the edges turn
+      **degraded**; off → they return to **healthy**.
+- [ ] Mini load generator with 300 / 6 / 50: the coloured bar and the counts add up to 300 and p50/p95/p99
+      are shown. With 2000 requests the 429 count becomes non-zero (per-client rate limit).
+- [ ] Router card: *Requests routed to each edge* shows three bars of roughly a third each.
+- [ ] Origin card: after the load generator or the demo, *Writes per fsync* shows a value for the last 10 s.
+- [ ] Event log filters: *Breaker*, *Reconcile*, *Rate limit*, *Purge* show only that type; *All* shows all.
 
 Presentation and accessibility:
-- [ ] Dark theme: switch the OS to dark, or use DevTools → Rendering → *prefers-color-scheme: dark*. All text
-      stays readable and the pills stay distinguishable.
-- [ ] Phone width: in the DevTools device toolbar at 375 px wide there is no horizontal page scroll, the
-      topology stacks vertically, and the panels form one column.
-- [ ] Keyboard only: Tab reaches every input and button in order with a visible focus ring; Enter submits the
-      forms; Space or Enter toggles the outage button.
+- [ ] *Theme* button cycles auto → light → dark and is remembered on reload; in auto it follows the OS. All
+      text stays readable and every state is still labelled in words.
+- [ ] Phone width: in the DevTools device toolbar at 375 px wide there is no horizontal page scroll, the flow
+      diagram turns vertical, and the panels form one column.
+- [ ] Keyboard only: Tab reaches every button, input and the GET/PUT/Purge choice in order with a visible focus
+      ring; arrow keys switch GET/PUT/Purge; Enter submits the forms; Space or Enter toggles the outage switch
+      and the filter chips.
+- [ ] Hover (or long-press) a dotted label in an edge card: a tooltip explains it. *What the words mean* opens
+      the glossary.
 - [ ] DevTools console: no JavaScript errors or warnings. Network-error lines for requests that are meant to
       fail (the `404` cold miss, `503` while degraded) are expected and are not page errors.
 
 Failure views:
-- [ ] `docker compose kill edge-2`: within about 2 s edge-2 shows **down (unreachable)** and the router shows
-      **degraded (edge missing)** with `2 of 3 edges on the ring`. Keys owned by edge-2 are still served
-      through the other edges. `docker compose start edge-2` brings both back to **healthy**.
-- [ ] `docker compose stop write-api`: the origin shows **down (unreachable)** and the outage button is
-      disabled; `docker compose start write-api` restores it.
+- [ ] `docker compose kill edge-2`: within about 2 s edge-2 shows **unreachable** and the router shows
+      **2/3 edges**. Keys owned by edge-2 are still served through the other edges. `docker compose start edge-2`
+      brings both back to **healthy**.
+- [ ] `docker compose stop write-api`: write-api shows **unreachable** and the outage switch is disabled;
+      `docker compose start write-api` restores it.
 
 ## 4. Durability and recovery by hand
 
