@@ -18,6 +18,10 @@ target_link_libraries(outpost_common PUBLIC Threads::Threads)
 
 if(BUILD_TESTING)
     add_executable(common_tests
+        tests/testConsistentHash.cpp
+        tests/testLruCache.cpp
+        tests/testTokenBucket.cpp
+        tests/testCircuitBreaker.cpp
         tests/testWal.cpp
         tests/testUrlEncode.cpp
         tests/testShutdownSignal.cpp

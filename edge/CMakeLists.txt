@@ -21,10 +21,6 @@ target_link_libraries(edge_server PRIVATE
 
 if(BUILD_TESTING)
     add_executable(edge_tests
-        tests/testConsistentHash.cpp
-        tests/testLruCache.cpp
-        tests/testTokenBucket.cpp
-        tests/testCircuitBreaker.cpp
         tests/testEdgeServer.cpp
     )
     target_link_libraries(edge_tests PRIVATE
