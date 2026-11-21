@@ -47,8 +47,10 @@ struct VersionedValue
 
 /// @brief Thread-safe versioned key-value store.
 ///
-/// Reads take a shared lock; puts take an exclusive lock that also covers the WAL append, so the
-/// log order always matches the order in which writes were applied.
+/// A put decides under a shared lock, makes the write durable through the WAL without holding the
+/// map lock (so concurrent puts share one fsync), then applies it under the exclusive lock after
+/// re-checking that no newer write landed meanwhile. The map therefore only ever holds durable
+/// data, and replaying the log with the same comparison rebuilds exactly the same state.
 class KvStore
 {
 public:
@@ -97,6 +99,9 @@ public:
 
     /// @brief Put outcome counters.
     Counters counters() const;
+
+    /// @brief WAL append and fsync counters (all zero for an in-memory store).
+    common::WalStats walStats() const;
 
     /// @brief What WAL recovery found at construction (all zero for an in-memory store).
     common::WalRecoveryReport recoveryReport() const;

@@ -77,6 +77,7 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store)
     server.Get("/debug/stats", [&store](const httplib::Request& /*req*/, httplib::Response& res) {
         KvStore::Counters counters = store.counters();
         common::WalRecoveryReport recovery = store.recoveryReport();
+        common::WalStats wal = store.walStats();
         json body = {{"service", "storage"},
                      {"totalKeys", store.size()},
                      {"durable", store.isDurable()},
@@ -84,6 +85,7 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store)
                       {{"applied", counters.applied},
                        {"duplicates", counters.duplicates},
                        {"superseded", counters.superseded}}},
+                     {"wal", {{"appends", wal.appends}, {"fsyncs", wal.fsyncs}}},
                      {"walRecovery",
                       {{"validRecords", recovery.validRecords},
                        {"skippedBytes", recovery.skippedBytes},

@@ -9,7 +9,7 @@
 ///   PUT /key/:id      → body {"value":string,"version":uint>0,"writerId":string}
 ///                       → 200 {"key","result":"applied|duplicate|superseded","version","writerId"}
 ///                         where version/writerId describe the value now stored; 400 on a bad body
-///   GET /debug/stats  → key count, put outcome counters, WAL recovery report
+///   GET /debug/stats  → key count, put outcome counters, WAL appends/fsyncs, WAL recovery report
 ///   GET /debug/keys   → {"keys":[...]}
 ///
 /// Only write-api talks to this service; it is not reachable from outside the compose network.

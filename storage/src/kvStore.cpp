@@ -84,22 +84,37 @@ std::optional<VersionedValue> KvStore::get(const std::string& key) const
 PutOutcome KvStore::put(const std::string& key, const std::string& value, uint64_t version,
                         const std::string& writerId)
 {
+    PutOutcome outcome = PutOutcome::APPLIED;
+    {
+        std::shared_lock<std::shared_mutex> lock(mutex_);
+        auto it = data_.find(key);
+        outcome = compareWrite(it == data_.end() ? nullptr : &it->second, version, writerId);
+    }
+    // Make the write durable without holding the map lock, so concurrent puts share one fsync.
+    if (outcome == PutOutcome::APPLIED && wal_)
+    {
+        common::WalEntry entry;
+        entry.operation = common::WalOperation::PUT;
+        entry.key = key;
+        entry.value = value;
+        entry.version = version;
+        entry.writerId = writerId;
+        wal_->append(entry);
+    }
     std::unique_lock<std::shared_mutex> lock(mutex_);
-    auto it = data_.find(key);
-    PutOutcome outcome = compareWrite(it == data_.end() ? nullptr : &it->second, version, writerId);
     if (outcome == PutOutcome::APPLIED)
     {
-        if (wal_)
+        // A newer write may have become durable while this one was being logged; the logged record
+        // is then superseded on replay too, so the map and the log always agree.
+        auto it = data_.find(key);
+        outcome = compareWrite(it == data_.end() ? nullptr : &it->second, version, writerId);
+        if (outcome == PutOutcome::APPLIED)
         {
-            common::WalEntry entry;
-            entry.operation = common::WalOperation::PUT;
-            entry.key = key;
-            entry.value = value;
-            entry.version = version;
-            entry.writerId = writerId;
-            wal_->append(entry);
+            data_[key] = VersionedValue{value, version, writerId};
         }
-        data_[key] = VersionedValue{value, version, writerId};
+    }
+    if (outcome == PutOutcome::APPLIED)
+    {
         ++counters_.applied;
     }
     else if (outcome == PutOutcome::DUPLICATE)
@@ -156,6 +171,11 @@ KvStore::Counters KvStore::counters() const
 {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     return counters_;
+}
+
+common::WalStats KvStore::walStats() const
+{
+    return wal_ ? wal_->stats() : common::WalStats{};
 }
 
 common::WalRecoveryReport KvStore::recoveryReport() const
