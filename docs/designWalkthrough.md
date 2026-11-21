@@ -5,6 +5,12 @@ every major decision, and the bugs that measurements uncovered along the way. Th
 version. All numbers come from real runs recorded in `docs/gates/`, `docs/finalCheck.md` and
 `benchmarks/results/`, on an AMD Ryzen 5 5600H laptop (12 threads, WSL2, Docker Desktop).
 
+Three pieces were added after v1 was finished. Each was a measured bottleneck or a missing standard, and each is
+explained where it belongs below:
+- **group commit** in the write-ahead log (§3.5, Phase I);
+- **standard HTTP caching with purge** (§3.2, §4, Phase J);
+- **a redesigned dashboard** with a guided demo (§6).
+
 Contents:
 1. [The problems](#1-the-problems)
 2. [The architecture in plain words](#2-the-architecture-in-plain-words)
@@ -121,8 +127,9 @@ remaining edges, not just one neighbour.
 - Each entry records when it was stored. `get()` returns only fresh entries; `lookup()` returns any entry
   with a `fresh` flag.
 - Expired entries are **kept** on purpose. When the origin cannot answer, an expired copy is served as
-  `X-Cache: STALE`; when the origin is healthy, it is fetched again. In HTTP terms this is the
-  *stale-if-error* pattern (RFC 5861).
+  `X-Cache: STALE`; when the origin is healthy, it is revalidated. In HTTP terms this is the
+  *stale-if-error* pattern (RFC 5861). Staleness is bounded: a copy older than ttl + `stale-if-error`
+  (1 h by default) is not served, even during an outage.
 - The TTL also bounds staleness, which is what makes the system eventually consistent: without it, an edge
   could serve an old value forever.
 
@@ -130,6 +137,10 @@ remaining edges, not just one neighbour.
 - `put(key, value, version)` is ignored when the cached entry is newer.
 - That closes the classic cache-aside race: a read misses and fetches v1, a write stores v2 and caches it,
   then the slow read finishes and would otherwise put v1 back.
+
+**Metadata for HTTP caching (Phase J).** `put()` also stores an opaque tag, the edge's ETag, and `lookup()`
+returns the entry's version, tag and age. That is all the edge needs to send `ETag`, `Last-Modified` and `Age`,
+and to answer `304`. The cache itself stays HTTP-agnostic.
 
 ### 3.3 Token bucket: "one client cannot flood us" (`tokenBucket.*`)
 
@@ -201,8 +212,8 @@ Storage uses it for durability, and each edge uses one as its outage queue.
 - The magic number gives recovery something to resynchronise on.
 
 **Sequential I/O.**
-- The file is opened in append mode, and each record is one unbuffered `fwrite` at the end, followed by
-  `fsync`.
+- The file is opened in append mode, and each record is one unbuffered `fwrite` at the end. The record is
+  then fsync'd (shared with other writers, see *group commit* below).
 - Writes and replays are therefore sequential, the same shape as database WALs, Kafka's log or Redis's
   append-only file.
 - The cost of durability is not seeking but the `fsync`: the call waits until the data is on stable storage.
@@ -226,11 +237,47 @@ Storage uses it for durability, and each edge uses one as its outage queue.
 **Start-up.** `takeRecoveredEntries()` hands storage the records the recovery scan already parsed, instead
 of reading the file a second time. Start-up went from 7.2 s to 3.7 s on a 46.7 MB log (Debug build).
 
-**The price of durability.**
-- Writes take about **114 ms** at p50 under 32 concurrent writers with fsync on, and **6 ms** with it off.
-- Storage applies writes one at a time, each holding the lock through its fsync, so concurrent writers queue.
-- The standard fix is **group commit**: append a batch of writes (still sequentially), then do one fsync for
-  the batch.
+**Group commit (Phase I): durability without one fsync per write.**
+- **The measured problem.** With one fsync per write, PUT p50 was **113.90 ms** under 32 clients, against
+  **6 ms** with fsync off. Storage also held its map lock through each fsync, so concurrent writers queued
+  behind each other one disk flush at a time.
+- **The design (leader/follower).**
+  1. A writer appends its record under the log's lock.
+  2. If no fsync is running, it becomes the **leader**: it notes the highest sequence number written so far,
+     **releases the lock**, fsyncs, takes the lock back, marks everything up to that number durable, and wakes
+     the waiters.
+  3. A writer that finds an fsync running waits, then checks whether that fsync covered its record. If it did
+     not, it may lead the next one.
+
+  Every `append()` still returns only once its own record is on disk.
+- **Why the lock is released during fsync.** That is what lets other writers append while the disk is busy;
+  their records then share the *next* fsync.
+- **No batching window.** Some databases wait a few hundred microseconds to collect a bigger batch. Outpost
+  does not, so a lone write is never delayed. The cost is that writes share an fsync only when they overlap:
+  measured **2.99** writes per fsync at full speed, **1.33** at 2587 requests/s, and **1.05** in a run with 1 %
+  writes.
+- **A failed fsync is fatal for the log** (the "fsyncgate" lesson from PostgreSQL). After a failed fsync the
+  kernel may already have dropped the dirty pages, so a retry could "succeed" without the data. The log
+  therefore refuses every later append until the process restarts and recovers from what is really on disk.
+- **The map must not hold the lock across the fsync either.** `KvStore::put`:
+  1. decides under a *shared* lock (is this write newer?);
+  2. makes it durable through the WAL **without** holding the map lock;
+  3. takes the *exclusive* lock and checks again, because a newer write may have become durable meanwhile;
+  4. applies the write only if it is still the newest.
+
+  The map therefore only ever holds durable data, and replaying the log with the same comparison rebuilds the
+  same state.
+- **`discardThrough` and `truncate`** wait until no fsync is running before they touch the file. Otherwise
+  `discardThrough` could close the descriptor the leader is fsyncing.
+- **Honest gap.** No test forces that exact interleaving, because it would need fault injection around fsync.
+  The waits are there by design, and the concurrency tests show both operations stay consistent, including
+  under ThreadSanitizer.
+- **Result.** At the same 2587 requests/s:
+  - PUT p50 went from **113.90 to 7.90 ms**, and p99 from 214.76 to 13.92 ms;
+  - cache-hit p50 stayed at 0.96 → 0.98 ms.
+
+  At full speed the cluster serves **2.6× more requests** (2587 → 6759/s). Every write is still on disk
+  before it is acknowledged.
 
 ### 3.6 Small helpers
 
@@ -238,7 +285,13 @@ of reading the file a second time. Start-up went from 7.2 s to 3.7 s on a 46.7 M
   as `a`, because `?` starts a query string. It is hand-written because cpp-httplib's encoder is in its
   internal `detail` namespace.
 - **`requestLimits`.** The 256-byte key and 1 MiB value limits, shared by the edge and write-api. The edge
-  rejects an oversized write before queueing it, so a queued write can never be rejected later.
+  rejects an oversized write before queueing it, so a queued write can never be rejected later. It also holds
+  the writer-id rule: 1–64 characters from `[A-Za-z0-9._-]`, because the writer id becomes part of an ETag.
+- **`httpCache` (Phase J).**
+  - `makeEtag(version, writerId)` returns `"<version>-<writerId>"`.
+  - `etagMatches` evaluates `If-None-Match` as RFC 9110 requires: comma-separated lists, `*`, and weak `W/`
+    tags compared weakly.
+  - The ETag is the write's identity, so no layer has to hash a body to know whether two copies are the same.
 - **`shutdownSignal`.**
   - Blocks SIGINT/SIGTERM before any thread starts and waits for them on a dedicated `sigwait` thread, which
     then stops the server so `main` returns normally.
@@ -273,14 +326,22 @@ restart. The versions are already durable in storage's WAL.
 - Deletes are not in v1: an unversioned delete followed by a replayed older write would resurrect the key,
   so deletes need versioned tombstones.
 
+**Group commit.** A put becomes durable without holding the map lock, and concurrent puts share fsyncs
+(§3.5).
+
 **API.**
-- `GET /key/:k` → value, version, writerId, or 404.
+- `GET /key/:k` → value, version, writerId and an `ETag`, or 404. With an `If-None-Match` that matches the
+  stored write → `304` with no body.
 - `PUT /key/:k {value, version, writerId}` → `{result: applied | duplicate | superseded}`.
-- Plus `/health` and `/debug/stats`, which include the WAL recovery report.
+- Plus `/health` and `/debug/stats`, which include the WAL recovery report and the WAL's appends and fsyncs.
 
 ### 4.2 write-api: the guarded front door (`write-api/`)
 
-**Validation.** Key ≤ 256 bytes, value ≤ 1 MiB, version > 0, non-empty writer id; otherwise 400.
+**Validation.** Key ≤ 256 bytes, value ≤ 1 MiB, version > 0, writer id of 1–64 characters from
+`[A-Za-z0-9._-]`; otherwise 400.
+
+**Conditional reads.** `If-None-Match` is forwarded to storage, and storage's `304` and `ETag` come back
+unchanged. An edge can therefore ask "is my copy still current?" and get an answer without the value.
 
 **Health reflects storage.** `/health` is 200 only if storage answers its own `/health` within 1 s.
 Originally it was always 200, so a storage-only outage never opened any breaker; edges kept calling and
@@ -302,12 +363,24 @@ answering 404.
 | Cache state | Breaker | What happens |
 |---|---|---|
 | Fresh entry | CLOSED | `200`, `X-Cache: HIT` (origin untouched) |
-| Missing or expired | CLOSED | Fetch from write-api; `200 MISS` and cache with its version, or `404 MISS` |
-| Missing or expired | CLOSED, fetch fails | Expired entry served as `200 STALE`; nothing cached → `503` |
-| Any entry | OPEN / HALF_OPEN | `200 STALE` |
-| Nothing | OPEN / HALF_OPEN | `503` (cannot serve what it does not have) |
+| Missing | CLOSED | Fetch from write-api; `200 MISS`, cached with its version and ETag, or `404 MISS` |
+| Expired, or the client sent `no-cache` / `max-age=0` | CLOSED | Revalidate: send the cached ETag in `If-None-Match`. A `304` from the origin → keep the copy, restart its ttl, `200 REVALIDATED`. A changed value → `200` with it. |
+| Any copy no older than ttl + stale-if-error | CLOSED, but the fetch fails | `200 STALE` |
+| Any copy no older than ttl + stale-if-error | OPEN / HALF_OPEN | `200 STALE` |
+| Nothing usable | not CLOSED, or the fetch fails | `503` (it cannot serve what it does not have) |
 
 A rate-limited request gets `429` before any of this.
+
+**HTTP caching headers (Phase J).** Every answer that carries a value has:
+- `ETag: "<version>-<writerId>"`;
+- `Last-Modified` (the version's wall-clock second);
+- `Age` (seconds since this edge stored or revalidated the copy);
+- `Cache-Control: max-age=<remaining ttl>, stale-if-error=<seconds>`.
+
+If the client's `If-None-Match` matches, the answer is `304` with no body. A browser, a CDN or another cache in
+front of Outpost can therefore cache and revalidate with the standard rules instead of custom headers.
+
+**Purge.** `POST /purge/key/:k` evicts the key and logs a `purge` event. The router calls it on every edge.
 
 **Write path** (`PUT /key/:k`).
 1. Validate the size: oversized → 400, even while degraded.
@@ -317,8 +390,8 @@ A rate-limited request gets `429` before any of this.
    passed through unchanged; a validation error must not be queued.
 4. Otherwise, or if forwarding fails, append the write with its version to the edge's WAL and answer
    `202 X-Write-Mode: QUEUED`.
-5. In both success cases, cache the value with its version. Reads during an outage then see the client's own
-   write.
+5. In both success cases, cache the value with its version and ETag, and return that `ETag`. Reads during an
+   outage then see the client's own write, and a client can use the ETag in later conditional reads.
 
 **Maintenance thread** (every second):
 - **Heartbeat:** if `breaker.isAllowed()`, call write-api `/health` and record the result.
@@ -331,9 +404,13 @@ A rate-limited request gets `429` before any of this.
   4. `discardThrough` the last resolved sequence number.
 
 **Observability.**
-- `/debug/stats` reports: cache hit rate and size, breaker state with the last 10 transitions, the caller's
-  remaining tokens, queue depth and counters, and the last 100 events (breaker changes, reconcile start and
-  finish, rate-limit rejections at most once a second).
+- `/debug/stats` reports:
+  - the cache's hit rate and size, its revalidations, 304s and purges;
+  - the breaker state with the last 10 transitions;
+  - the caller's remaining tokens;
+  - the queue depth and counters;
+  - the last 100 events: breaker changes, reconcile start and finish, rate-limit rejections at most once a
+    second, and purges.
 - The schema is in `docs/statsApi.md`. A test reads that document's field table and checks every field
   against a live edge, so the dashboard cannot silently break.
 
@@ -341,10 +418,18 @@ A rate-limited request gets `429` before any of this.
 
 **Routing.**
 - Hashes the key onto the ring of reachable edges and forwards GET or PUT to the owner.
-- The key is percent-encoded again, the client address is appended to `X-Forwarded-For`, and the body is
-  passed through.
-- The edge's status, body and `X-Cache`, `X-Node`, `X-Write-Mode` and `Retry-After` headers come back
-  unchanged.
+- The key is percent-encoded again, the client address is appended to `X-Forwarded-For`, and the body and the
+  client's `If-None-Match` and `Cache-Control` are passed through.
+- The edge's status, body and its `X-Cache`, `X-Node`, `X-Write-Mode`, `Retry-After`, `ETag`,
+  `Last-Modified`, `Age` and `Cache-Control` headers come back unchanged. A `304` has no body.
+
+**Purge fan-out (Phase J).**
+- `POST /purge/key/:k` goes to **every configured edge**, not only those on the ring: an edge that is briefly
+  off the ring may still hold the key and serve it once it rejoins.
+- The router answers `200 {"complete": true, …}` when every edge confirmed. If an edge could not be reached,
+  it answers `502` with `complete: false` and lists each edge's answer.
+- **Trade-off:** the calls are sequential, each bounded by the edge timeout. That is simple and enough for
+  three edges; a large fleet would fan out in parallel or publish invalidations on a message bus.
 
 **Membership.**
 - Every configured edge (`EDGE_NODES`) starts on the ring. A health thread checks each edge every second;
@@ -373,7 +458,15 @@ GET  /key/foo       → 404, X-Cache: MISS, X-Node: edge-3    (the edge asked th
 PUT  /key/foo bar   → 200, X-Write-Mode: DIRECT, applied
 GET  /key/foo       → 200, X-Cache: HIT                       (origin untouched)
 ```
-Measured: a cache hit through the router takes **0.96 ms p50 / 1.64 ms p99** at 2345 requests/s.
+Measured: a cache hit through the router takes **0.98 ms p50 / 2.45 ms p99** at 2587 requests/s, and a PUT
+**7.90 ms p50** with every write fsync'd (group commit build, `docs/benchmarks.md`).
+
+**Conditional read, revalidation and purge** (`WORKLOAD=conditional`, 4 KiB values, 1 % writes):
+```
+GET /key/k  If-None-Match: "<etag>"      → 304, no body              p50 2.94 ms (77.4 % of conditional reads)
+GET /key/k  Cache-Control: no-cache      → 200, X-Cache: REVALIDATED p50 5.01 ms (origin answered 304)
+POST /purge/key/k                        → 200 {"complete": true}; the next GET is a MISS
+```
 
 **Outage** (`docker compose stop storage`):
 1. write-api's `/health` turns 503. The edge's heartbeats fail, and after three of them the breaker opens:
@@ -421,12 +514,50 @@ build in the top-level `CMakeLists.txt`:
 ### The dashboard
 
 - **Stack.** Plain HTML, CSS and JavaScript with no framework, build step or external resource, served by
-  nginx on 8090. nginx also proxies `/router`, `/edge1..3` and `/origin-admin`, so the page needs no CORS.
+  nginx on 8090.
+  - nginx proxies `/router`, `/edge1..3`, `/origin-admin` and storage's read-only `/debug/stats`, so the
+    page needs no CORS.
+  - The script is eight small ES modules in `dashboard/src/` (`api`, `live`, `format`, `flowDiagram`,
+    `guidedDemo`, `panels`, `controls`, `main`), loaded natively by the browser.
+- **Story first** (owner's choice of layout).
+  - The page opens with a live **request-flow diagram**: Client → Router → edges → write-api → storage. The
+    last request's path lights up, with its result and a sentence explaining it.
+  - Below it is a **guided demo**: nine steps from a normal read to an outage and recovery. Each step checks
+    the real response or waits for the live cluster state, and turns green only if the cluster really did
+    it. Step 9 proves the queued write reached storage with a `no-cache` read that comes back REVALIDATED:
+    storage confirmed the edge's ETag.
+- **Panels.**
+  - Every edge card label has a one-line explanation.
+  - The router card shows how requests spread over the edges.
+  - The origin card shows how many writes shared each fsync over the last 10 s.
+  - The tester sends GET / PUT / Purge, optionally with `If-None-Match` or `no-cache`, and lists every caching
+    header.
 - **Raw URIs.** nginx forwards the raw request URI. The usual rewrite would forward a decoded path and break
   keys containing `/` or `?` again.
-- **Polling.** The page polls once per second and shows health as colour **and** text.
-- **Controls.** It drives the simulated outage, and its load generator is labelled "browser-measured, not a
-  benchmark".
+- **Correctness details.**
+  - Health is shown as colour **and** text. Light and dark themes are supported, and the page works at phone
+    width.
+  - nginx serves the page with `Cache-Control: no-cache`, so a rebuilt page never runs an old cached script.
+- **A real-browser test.** `dashboard/tests/browserClickTest.ps1` drives a headless Chrome through the guided
+  demo and the tools. Its first run found a bug the curl-based checks could not:
+  `fetch(…, {cache: 'no-store'})` adds `Cache-Control: no-cache` to the request, and the edges honour it, so
+  every dashboard read was revalidated. Plain requests now send the neutral `no-transform` directive.
+
+### Logging
+
+- **Where logs go.** Every service logs to standard output with spdlog: a timestamp, the level, the service
+  and the message.
+  - Under Docker the container runtime stores the logs; you read them with `docker compose logs -f <service>`.
+  - Compose caps them at 3 × 10 MB per container; on Linux the default would otherwise grow without limit.
+  - `scripts/localCluster.sh` writes `build/localCluster/<service>.log`.
+- **Why standard output, not files.** Containers are disposable: files inside them disappear with the
+  container, need a volume, and need rotation. The platform (Docker, Kubernetes, a log shipper) already does
+  all of that.
+- **What is logged.** State changes and errors (start-up, breaker transitions, drains, failovers, purges),
+  never each request, so logging costs nothing on the hot path. `LOG_LEVEL` sets the level. Per-request
+  counts live in `/debug/stats`.
+- **Next step.** JSON lines with a request id carried across the four hops, so one request can be followed
+  through every service.
 
 ### Code rules
 
@@ -445,7 +576,7 @@ build in the top-level `CMakeLists.txt`:
 - **Test-first changes.** Every bug fix and feature started with a test that reproduced it, shown failing.
   The fix followed, then all tests ran and the change was committed. For a data race the failing evidence
   came from ThreadSanitizer, for a performance bug from a measurement.
-- **In-process tests.** 140 tests in 5 suites. The edge and router tests start the real servers on ephemeral
+- **In-process tests.** 163 tests in 5 suites. The edge and router tests start the real servers on ephemeral
   ports against scriptable fake servers, or against the real write-api and storage code in the same process.
 - **Sanitizers.** Every suite also runs under AddressSanitizer + UndefinedBehaviorSanitizer and under
   ThreadSanitizer (`-DOUTPOST_SANITIZE=...`), with 0 reports. They found:
@@ -457,19 +588,28 @@ build in the top-level `CMakeLists.txt`:
   - routing correctness and cold-miss caching on the right edge;
   - odd keys stored exactly;
   - 429s under a burst;
-  - that only the router port is reachable.
+  - that only the router port is reachable;
+  - HTTP caching end to end: validators on a HIT, `304` for a matching `If-None-Match`, a `no-cache` read
+    revalidated by the origin's `304`, and purge on all three edges followed by a MISS (21 checks).
+- **Dashboard.** `scripts/dashboardAcceptance.sh` runs the demo sequence through the dashboard's own proxy
+  paths (18 checks). `dashboard/tests/browserClickTest.ps1` clicks through it in a real browser.
 - **Chaos test** (`scripts/chaosTest.sh`). Continuous reads of 200 warm keys and a stream of unique writes
   while storage, then write-api, are killed and restarted. Then an edge is killed **200 ms into replaying its
   queue**.
   - It passes only if every acknowledged write (200/202) is in storage with its exact value, and no warm read
     failed during the outages.
-  - Final run: **3714 / 3714** writes persisted; **0** failed reads out of 2476 during outages (1772 served
+  - Final v1 run: **3714 / 3714** writes persisted; **0** failed reads out of 2476 during outages (1772 served
     STALE); **59** replayed writes recognised as duplicates.
+  - With group commit: **3448 / 3448** persisted; **0** failed reads out of 1689 (1352 STALE); **50**
+    duplicates.
   - A lesson learned: the first version killed the edge with `kill -9 1` from inside its container. The
     kernel ignores signals sent to a container's PID 1 from inside, so the "kill" silently did nothing. The
     script now kills from the host and verifies the container really exited (exit code 137).
-- **Benchmark** (`scripts/runBenchmark.sh`). k6 with 32 clients, 90 % GET / 10 % PUT, through the router,
-  results saved with the hardware. See `docs/benchmarks.md`.
+- **Benchmark** (`scripts/runBenchmark.sh`). k6 through the router, results saved with the hardware. See
+  `docs/benchmarks.md`. Three modes:
+  - **closed loop:** 32 clients at full speed;
+  - **fixed rate:** `RATE=`, to compare builds at the same load;
+  - **conditional:** `WORKLOAD=conditional`, for 304s and revalidation.
 - **CI.** Build, unit tests, both sanitizer builds, style checks and the compose integration test on every
   push.
 - **Fresh clone.** The final check rebuilt and reran everything from an empty directory
@@ -497,6 +637,17 @@ build in the top-level `CMakeLists.txt`:
 | Worker pool starvation | Benchmark tail | 64 workers |
 | Services died on SIGTERM; PID 1 ignored it | Shutdown test (exit 143) | `ShutdownSignal` |
 | Slow DNS on a dead container stalled failover | Timing measurement (7.1 s lookup) | Bounded lookups |
+| Writes queued one fsync at a time (PUT p50 114 ms) | Benchmark | Group commit; no map lock across fsync |
+| Every dashboard read was revalidated | Browser click test (demo step 4 got REVALIDATED) | `Cache-Control: no-transform` on plain fetches |
+| The dashboard's load generator could never hit the cache | Browser click test (200/200 MISS) | Write the keys first |
+
+The measurements themselves had bugs too:
+- **req/s was averaged over the setup phase.** k6's rate includes its ~6 s setup, about 10 % low. Summaries now
+  print the measured-phase rate.
+- **A cumulative counter spanned two runs.** Storage had not restarted between them, so its WAL fsync count
+  covered both. The script now takes before and after snapshots.
+- **Faster writes made reads look slower.** Closed-loop clients simply sent more requests. Builds are now
+  compared at a fixed rate.
 
 ---
 
@@ -504,26 +655,32 @@ build in the top-level `CMakeLists.txt`:
 
 **Deliberate trade-offs.**
 - Availability over freshness while degraded.
-- Durability over write latency (fsync per write).
+- Durability before acknowledgement, with group commit but no batching window: a lone write is never delayed,
+  so writes share an fsync only when they overlap.
 - Wall-clock versions.
 - A trusted network: no authentication; `X-Forwarded-For` is believed.
 
 **Limitations.**
-- Writes serialize behind one fsync each.
+- At full speed (2.6× the old load), the cache-hit p99 is 11.29 ms, above the 10 ms target. p50 and p95 are
+  below it, and at the old load p99 is 2.45 ms.
+- HTTP caching uses ETags only (no `If-Modified-Since`). Purge removes one key and is best-effort for an
+  unreachable edge.
+- Logs are plain text, without a request id across services.
 - The storage WAL is never compacted.
 - No deletes.
 - The router's edge list is static.
 - The router and storage are single instances.
 - Everything has run on one machine.
 
+**Done after v1.** Group commit (Phase I), and standard HTTP caching with purge (Phase J).
+
 **Next steps, in order of value.**
-1. **Group commit.** One fsync per batch of writes; the biggest measured bottleneck.
-2. **Standard HTTP caching.** `Cache-Control`, `ETag`/`304` revalidation, `stale-if-error`, and a purge API
-   that clears a key on every edge.
-3. **Multi-region deployment** with Terraform, with cross-region latency measured.
-4. **An origin shield.** A middle cache tier, so misses from many edges collapse into one origin request.
+1. **Multi-region deployment** with Terraform, with cross-region latency measured.
+2. **An origin shield.** A middle cache tier, so misses from many edges collapse into one origin request.
+3. **Observability.** Structured JSON logs, a request id across hops, and Prometheus metrics.
+4. **Purge by tag or prefix** (surrogate keys), and authenticated purge.
 5. **Further out.** Gossip-based membership, several routers, replicated storage (consensus), a hybrid
-   logical clock, versioned tombstones for deletes, and Prometheus metrics.
+   logical clock, and versioned tombstones for deletes.
 
 ---
 
@@ -540,7 +697,18 @@ build in the top-level `CMakeLists.txt`:
 - **Write-ahead log (WAL):** an append-only file to which changes are written before they are acknowledged.
 - **fsync:** asks the OS to put written data on stable storage before returning.
 - **Torn write:** a record only partly written when the process or machine stopped.
-- **Group commit:** many writes share one fsync.
+- **Group commit:** many writes share one fsync. Here the first waiting writer (the leader) fsyncs for
+  everyone who appended before it.
+- **fsyncgate:** the 2018 discovery that after a failed fsync, Linux may drop the unwritten data, so retrying
+  fsync can falsely succeed. The safe response is to stop and recover.
+- **ETag:** an identifier of one version of a resource; here `"<version>-<writerId>"`.
+- **Conditional request / 304 Not Modified:** the client sends `If-None-Match: <etag>`; if it still matches, the
+  server answers 304 with no body.
+- **Revalidation:** a cache asking the origin "is my copy still current?" with its ETag instead of fetching the
+  value again.
+- **Purge:** removing a key from caches before it expires.
+- **Closed-loop vs open-loop load:** a closed-loop client sends its next request when the last one returns, so
+  the load depends on the latency. Open-loop (fixed-rate) load starts requests at a set rate.
 - **Idempotent:** applying the same operation twice has the same effect as once.
 - **Last-writer-wins:** the write with the highest version is kept.
 - **Stale-if-error:** serving cached data past its freshness lifetime when the origin fails.
