@@ -16,3 +16,9 @@ coverage/
 
 # Editor and language-server caches
 .cache/
+
+# Private material kept only on the owner's machine: planning notes, specs, interview notes, and the AI
+# assistant's instructions and local settings.
+notes/
+/CLAUDE.md
+.claude/
