@@ -208,6 +208,9 @@ the admin endpoint and `LOG_LEVEL`.
 
 ## How to test it yourself
 
+New to the project? [docs/handsOnTour.md](docs/handsOnTour.md) walks through everything step by step: what each
+piece is for, what to run, what you should see, and what it proves.
+
 | What | Command | A pass looks like |
 |---|---|---|
 | Unit and in-process tests (163) | `cmake -S . -B build && cmake --build build -j && ctest --test-dir build` | `100% tests passed, 0 tests failed out of 5` |
