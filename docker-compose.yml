@@ -16,6 +16,14 @@ x-dns: &dns
   - "timeout:1"
   - "attempts:1"
 
+# Services log to stdout; Docker keeps at most 3 × 10 MB per container (the default json-file driver
+# on Linux would otherwise grow without limit).
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 x-edge: &edge
   build:
     context: .
@@ -24,6 +32,7 @@ x-edge: &edge
     write-api:
       condition: service_healthy
   dns_opt: *dns
+  logging: *logging
   restart: unless-stopped
 
 services:
@@ -35,8 +44,10 @@ services:
       PORT: "9091"
       WAL_PATH: /data/storage.wal
       WAL_FSYNC: "${WAL_FSYNC:-1}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
     volumes:
       - storage-data:/data
+    logging: *logging
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9091/health"]
@@ -52,10 +63,12 @@ services:
       STORAGE_PORT: "9091"
       # The dashboard's simulated-outage toggle; reachable only through the dashboard proxy.
       ADMIN_ENABLED: "${ADMIN_ENABLED:-1}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
     depends_on:
       storage:
         condition: service_healthy
     dns_opt: *dns
+    logging: *logging
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "curl", "-fsS", "http://localhost:9090/health"]
@@ -72,11 +85,13 @@ services:
       WAL_FSYNC: "${WAL_FSYNC:-1}"
       CACHE_CAPACITY: "${CACHE_CAPACITY:-1024}"
       CACHE_TTL_MS: "${CACHE_TTL_MS:-60000}"
+      CACHE_STALE_IF_ERROR_MS: "${CACHE_STALE_IF_ERROR_MS:-3600000}"
       RATE_LIMIT_PER_SEC: "${RATE_LIMIT_PER_SEC:-100}"
       RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-200}"
       BREAKER_FAILURE_THRESHOLD: "3"
       BREAKER_RESET_TIMEOUT_MS: "5000"
       HEALTH_CHECK_INTERVAL_MS: "1000"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
     volumes:
       - edge-1-data:/data
     healthcheck:
@@ -114,9 +129,11 @@ services:
     environment:
       PORT: "8080"
       EDGE_NODES: edge-1=edge-1:8081,edge-2=edge-2:8082,edge-3=edge-3:8083
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
     ports:
       - "8080:8080"
     dns_opt: *dns
+    logging: *logging
     depends_on:
       edge-1:
         condition: service_healthy
@@ -137,6 +154,7 @@ services:
     depends_on:
       router:
         condition: service_healthy
+    logging: *logging
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]

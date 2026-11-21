@@ -8,6 +8,7 @@
 ///   STORAGE_HOST  storage service hostname (default "storage")
 ///   STORAGE_PORT  storage service port (default 9091)
 ///   ADMIN_ENABLED "1" registers the simulated-outage admin endpoint (default "0")
+///   LOG_LEVEL     trace, debug, info, warn, error, critical or off (default info)
 
 #include <httplib.h>
 #include <spdlog/spdlog.h>
@@ -22,7 +23,15 @@
 int main()
 {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [write-api] %v");
-    spdlog::set_level(spdlog::level::info);
+    const char* levelSetting = std::getenv("LOG_LEVEL");
+    std::string levelName = levelSetting != nullptr ? levelSetting : "info";
+    spdlog::level::level_enum level = spdlog::level::from_str(levelName);
+    bool knownLevel = level != spdlog::level::off || levelName == "off";
+    spdlog::set_level(knownLevel ? level : spdlog::level::info);
+    if (!knownLevel)
+    {
+        spdlog::warn("Unknown LOG_LEVEL '{}'; using info", levelName);
+    }
 
     auto env = [](const char* name, const std::string& fallback) {
         const char* value = std::getenv(name);

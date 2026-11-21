@@ -9,6 +9,7 @@
 ///   HEALTH_CHECK_INTERVAL_MS  time between edge health checks (default 1000)
 ///   EDGE_TIMEOUT_MS           connect/read timeout to an edge (default 2000)
 ///   UNHEALTHY_THRESHOLD       failed checks before an edge leaves the ring (default 2)
+///   LOG_LEVEL                 trace, debug, info, warn, error, critical or off (default info)
 
 #include <spdlog/spdlog.h>
 
@@ -23,7 +24,15 @@
 int main()
 {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [router] %v");
-    spdlog::set_level(spdlog::level::info);
+    const char* levelSetting = std::getenv("LOG_LEVEL");
+    std::string levelName = levelSetting != nullptr ? levelSetting : "info";
+    spdlog::level::level_enum level = spdlog::level::from_str(levelName);
+    bool knownLevel = level != spdlog::level::off || levelName == "off";
+    spdlog::set_level(knownLevel ? level : spdlog::level::info);
+    if (!knownLevel)
+    {
+        spdlog::warn("Unknown LOG_LEVEL '{}'; using info", levelName);
+    }
 
     auto env = [](const char* name, const std::string& fallback) {
         const char* value = std::getenv(name);
