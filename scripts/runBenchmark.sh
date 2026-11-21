@@ -7,6 +7,8 @@
 # WORKLOAD=readHeavy (default, 90 % GET / 10 % PUT) or WORKLOAD=conditional (If-None-Match / 304,
 # no-cache revalidation, 4 KiB values; benchmarks/k6/conditional.js) picks the k6 script; for the
 # conditional workload WRITE_SHARE (default 0.10) is the share of requests that are PUTs.
+# RATE=<requests/s> (readHeavy only) holds the request rate fixed (open loop) instead of running VUS
+# closed-loop clients, so two builds can be compared at the same load.
 # The per-client rate limit is raised for the run (RATE_LIMIT_PER_SEC/BURST) so the limiter is not
 # what is being measured, then the defaults are restored. WAL_FSYNC=0 runs a comparison without
 # per-write fsync (not a supported production setting).
@@ -42,7 +44,11 @@ mkdir -p "$OUT"
     echo "memory: $(free -h | awk '/Mem:/{print $2}')"
     echo "kernel: $(uname -r)"
     echo "docker: $(docker version --format '{{.Server.Version}}'), $(docker info --format '{{.NCPU}} CPUs, {{.MemTotal}} bytes for containers, {{.OperatingSystem}}')"
-    echo "workload: $WORKLOAD.js, $VUS virtual users for $DURATION, $DESCRIPTION, through the router"
+    if [[ -n "${RATE:-}" ]]; then
+        echo "workload: $WORKLOAD.js, fixed arrival rate $RATE requests/s (up to $((VUS * 4)) virtual users) for $DURATION, $DESCRIPTION, through the router"
+    else
+        echo "workload: $WORKLOAD.js, $VUS virtual users for $DURATION, $DESCRIPTION, through the router"
+    fi
     echo "rate limit during the run: RATE_LIMIT_PER_SEC=1000000 RATE_LIMIT_BURST=1000000 (raised)"
     echo "WAL fsync on every write: WAL_FSYNC=${WAL_FSYNC:-1} (1 = durable across power loss)"
 } >"$OUT/environment.txt"
@@ -54,14 +60,15 @@ WAL_FSYNC="${WAL_FSYNC:-1}" RATE_LIMIT_PER_SEC=1000000 RATE_LIMIT_BURST=1000000 
 # difference between a snapshot taken before k6 and one taken after it.
 docker compose exec -T storage curl -s http://localhost:9091/debug/stats >"$OUT/storageStatsBefore.json" || true
 docker compose --profile bench run --rm --user "$(id -u):$(id -g)" \
-    -e DURATION="$DURATION" -e VUS="$VUS" -e OUT_DIR="/$OUT" -e WRITE_SHARE="${WRITE_SHARE:-0.10}" \
+    -e DURATION="$DURATION" -e VUS="$VUS" -e OUT_DIR="/$OUT" -e WRITE_SHARE="${WRITE_SHARE:-0.10}" -e RATE="${RATE:-0}" \
     k6 run --quiet "/benchmarks/k6/$WORKLOAD.js" >"$OUT/k6.txt" 2>&1 || true
 docker compose exec -T storage curl -s http://localhost:9091/debug/stats >"$OUT/storageStatsAfter.json" || true
 docker compose up -d --wait >/dev/null 2>&1
 
-python3 - "$OUT" "$WORKLOAD" <<'PY' | tee "$OUT/summary.md"
+python3 - "$OUT" "$WORKLOAD" "$DURATION" <<'PY' | tee "$OUT/summary.md"
 import json, sys
-out, workload = sys.argv[1], sys.argv[2]
+out, workload, duration = sys.argv[1], sys.argv[2], sys.argv[3]
+seconds = float(duration[:-1]) * (60 if duration.endswith("m") else 1)
 m = json.load(open(f"{out}/k6-summary.json"))["metrics"]
 def count(name):
     return int(m.get(name, {}).get("values", {}).get("count", 0))
@@ -75,8 +82,9 @@ print("# Benchmark summary\n")
 print("```")
 print(open(f"{out}/environment.txt").read().rstrip())
 print("```\n")
-print(f"Measured phase: {int(iterations['count'])} requests, {iterations['rate']:.0f} requests/s "
-      f"(k6 iterations; the 1000 setup PUTs are excluded).\n")
+print(f"Measured phase: {int(iterations['count'])} requests in {duration}, {iterations['count'] / seconds:.0f} requests/s "
+      f"(the 1000 setup PUTs are excluded). k6's own iteration rate, averaged over the whole run including "
+      f"the setup phase, is {iterations['rate']:.0f}/s; runs before 2026-11-21T1145 reported only that figure.\n")
 print("| Latency (ms) | samples | p50 | p95 | p99 | max |")
 print("|---|---|---|---|---|---|")
 if workload == "conditional":
@@ -107,6 +115,8 @@ else:
     print(f"Status codes: 2xx {count('status_2xx')}, 404 {count('status_404')}, 429 {count('status_429')}, "
           f"5xx {count('status_5xx')}, other {count('status_other')}")
 print(f"k6 http_req_failed rate (includes setup): {m['http_req_failed']['values']['rate']:.4%}")
+if count("dropped_iterations"):
+    print(f"Requests k6 could not start on time (dropped_iterations): {count('dropped_iterations')}")
 try:
     before = json.load(open(f"{out}/storageStatsBefore.json")).get("wal", {})
     after = json.load(open(f"{out}/storageStatsAfter.json")).get("wal", {})
