@@ -5,6 +5,8 @@ settings; `k6-summary.json` holds k6's raw output; chaos runs keep their raw log
 
 | Run | What it is |
 |---|---|
+| `2026-11-21T113220Z-conditional` | **Conditional requests**, gate J: 1 % PUTs, 77.4 % of conditional GETs answered 304 |
+| `2026-11-21T113028Z-conditional` | Conditional requests, gate J: 10 % PUTs (high churn), 26.2 % answered 304 |
 | `2026-11-21T105727Z-chaos` | **Chaos test**, gate I (group commit): 3448/3448 persisted |
 | `2026-11-21T105557Z-benchmark` | **Benchmark**, gate I (group commit): PUT p50 12.70 ms, 2.99 writes per fsync |
 | `2026-11-21T105412Z-benchmark` | Gate I repeat run (its WAL line spans two runs, see `NOTE.md`) |
