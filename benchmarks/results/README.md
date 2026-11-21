@@ -10,6 +10,10 @@ summaries print both. Comparisons between runs are unaffected because every run 
 
 | Run | What it is |
 |---|---|
+| `2026-11-21T123727Z-conditional` | **Final check 2** (fresh clone): conditional requests, 1 % writes, 78.3 % answered 304 |
+| `2026-11-21T123555Z-benchmark` | **Final check 2**: fixed 2587 req/s, PUT p50 8.76 ms, cache-hit p50 1.18 ms |
+| `2026-11-21T123424Z-benchmark` | **Final check 2**: full speed, 5955 req/s |
+| `2026-11-21T123241Z-chaos` | **Final check 2**: chaos PASS, 2834/2834 persisted |
 | `2026-11-21T114512Z-benchmark` | **Same load as before group commit** (fixed 2587 req/s = the final-check run's measured-phase rate): PUT p50 113.90 → 7.90 ms, GET HIT p50 0.96 → 0.98 ms |
 | `2026-11-21T114311Z-benchmark` | Fixed 2345 req/s, about 9 % below the baseline's real load (see `NOTE.md`) |
 | `2026-11-21T113220Z-conditional` | **Conditional requests**, gate J: 1 % PUTs, 77.4 % of conditional GETs answered 304 |

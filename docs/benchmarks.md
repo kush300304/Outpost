@@ -100,6 +100,23 @@ Concurrent writes now share one fsync, and storage no longer holds its map lock 
 Every request in every run above returned 2xx or 304 (k6 `http_req_failed` 0 %). The cache-hit ratio of plain
 GETs is 100 %, because the 1000 keys fit in the three edges' caches.
 
+### Final check from a fresh clone (`docs/finalCheck.md`)
+
+The same three workloads were rerun on the final code from a fresh clone, on the same laptop:
+
+| Run | Requests/s | GET HIT p50 / p95 / p99 | PUT p50 / p95 / p99 | Note |
+|---|---|---|---|---|
+| `2026-11-21T123424Z` full speed | 5955 | 3.40 / 9.28 / 13.22 | 13.59 / 21.18 / 26.89 | 2.75 writes per fsync |
+| `2026-11-21T123555Z` fixed 2587/s | 2587 | 1.18 / 2.00 / 3.76 | 8.76 / 12.74 / 16.10 | 1.37 writes per fsync |
+| `2026-11-21T123727Z` conditional, 1 % writes | 5979 | 304: 3.85 / 10.80 / 16.58 | 13.08 / 24.60 / 31.98 | 78.3 % of conditional reads → 304 |
+
+- **These are 10–20 % slower than the gate runs above**, with no code difference. A laptop under WSL2 and
+  Docker Desktop varies with temperature and background load, so treat single numbers as ±20 %.
+- **Every comparison still holds:**
+  - PUT p50 at the old load is 8.76 ms against 113.90 ms before group commit;
+  - cache-hit p50 and p95 stay under 10 ms;
+  - the 304 share matches the churn model.
+
 ## Problems the benchmarks found
 
 1. **Nagle's algorithm** (`2cd93bf`): cpp-httplib leaves `TCP_NODELAY` off, so on keep-alive connections

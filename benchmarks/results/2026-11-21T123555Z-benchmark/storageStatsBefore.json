@@ -1,0 +1,1 @@
+{"durable":true,"puts":{"applied":39539,"duplicates":59,"superseded":31},"service":"storage","totalKeys":4041,"wal":{"appends":39570,"fsyncs":15886},"walRecovery":{"skippedBytes":0,"truncatedBytes":0,"validRecords":377}}

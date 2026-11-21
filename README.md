@@ -276,6 +276,16 @@ Light and dark themes follow the system setting (or the *Theme* button), and the
 All numbers come from real runs on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2
 with Docker Desktop 29.9.3. Raw output is in `docs/gates/` and `benchmarks/results/`.
 
+A **final check from a fresh clone** reran everything after the last code change ([docs/finalCheck.md](docs/finalCheck.md)):
+- 163 tests, sanitizers clean;
+- integration 21/21, dashboard 18/18, browser 9/9;
+- chaos 2834/2834 writes persisted;
+- CI green.
+
+Its benchmarks came out 10–20 % slower than the runs quoted below, on the same laptop with the same code (for
+example PUT p50 8.76 ms instead of 7.90 ms at 2587 requests/s). Treat single numbers from a laptop as ±20 %;
+the comparisons hold in every run.
+
 **Tests**
 - **Unit and in-process:** 163 tests in 5 suites, all passing (`docs/gates/phaseJ.md`).
 - **Sanitizers:** ASan + UBSan and TSan runs pass every suite with 0 sanitizer reports. Earlier runs found a
@@ -356,9 +366,11 @@ build was then replayed at exactly that rate (`RATE=2587`).
 - **Breaker trigger:** consecutive failures only, no error-rate window.
 - **Membership changes:** the router's edge list is static configuration. Adding an edge means a config change
   and a router restart (about 1/(N+1) of keys move).
-- **Edge failover cost:** when an edge dies, the first request for one of its keys waits about 1 s (one bounded
-  DNS attempt) before the router fails over (measured 1017 ms), and health checks drop the edge after
-  1.8 s.
+- **Edge failover cost:**
+  - When an edge dies, the first request for one of its keys waits about 1 s (one bounded DNS attempt) before
+    the router fails over (measured 1017 ms), and health checks drop the edge after 1.8 s.
+  - A request already in flight to the edge at that instant fails. The router retries only refused
+    connections, not ones cut mid-response: 11 of 267 reads in the final chaos run's edge-kill window.
 - **Logs:** plain text, without a request id that follows one request across services.
 
 v2 ideas are listed in [docs/roadmap.md](docs/roadmap.md#v2-ideas-not-built):

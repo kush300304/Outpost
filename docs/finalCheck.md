@@ -1,4 +1,291 @@
-# Final check
+# Final checks
+
+Each final check rebuilds and reruns everything from a **fresh clone** of the published branch, in an empty
+directory: no build tree, dependency cache or Docker volume is reused. CI runs on GitHub for the same commit.
+
+- [Final check 2](#final-check-2-after-phases-i-and-j-2026-11-21): after group commit (Phase I) and HTTP caching
+  with purge (Phase J), on 2026-11-21.
+- [Final check 1](#final-check-1-v1-2026-11-20): v1, on 2026-11-20.
+
+**Machine:** AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2 kernel 6.18, Docker Desktop 29.9.3,
+g++ 15.2.0. CI runs on GitHub's ubuntu-24.04 runners.
+
+---
+
+## Final check 2: after Phases I and J (2026-11-21)
+
+The clone was `git clone --branch v1-completion <GitHub remote>` at **`67b2e40`**. The commits after it on the
+branch change documentation only (`docs/handsOnTour.md`, the interview notes, README links).
+
+### Summary
+
+| Area | Result |
+|---|---|
+| Clean build + 163 tests (5 suites) | **PASS** (100 %) |
+| ASan + UBSan | **PASS** (5/5 suites, 0 reports) |
+| ThreadSanitizer | **PASS** (5/5 suites, 0 reports) |
+| CLAUDE.md style + clang-format | **PASS** (47 files, 0 violations, all formatted) |
+| `docker compose up` from scratch (volumes removed) | **PASS** (7 services healthy in 19.8 s; only 8080 and 8090 published) |
+| Integration test | **PASS** (21/21) |
+| Dashboard acceptance | **PASS** (18/18) |
+| Dashboard in a real browser (`dashboard/tests/browserClickTest.ps1`) | **PASS** (9/9 guided-demo steps, 0 console errors, no overflow at 1280 or 390 px) |
+| Graceful shutdown | **PASS** (4/4 exit 0 in about 114 ms) |
+| Chaos test | **PASS**: 2834/2834 acknowledged writes persisted, 0 failed warm reads in 1569 outage reads, 59 replayed duplicates recognised after a real mid-drain edge kill |
+| Benchmarks | **PASS** (0 failed requests): 5955 req/s at full speed; at 2587 req/s PUT p50 8.76 ms and cache-hit p50 1.18 ms; 78.3 % of conditional reads answered 304 |
+| CI (GitHub Actions, run 44903184983) | **PASS** (all 5 jobs) |
+
+### 1. Build, tests, sanitizers, style
+
+```
+$ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
+real	2m43.896s
+1/5 Test #1: common_tests .....................   Passed    1.53 sec
+2/5 Test #2: storage_tests ....................   Passed    0.05 sec
+3/5 Test #3: write_api_tests ..................   Passed    0.40 sec
+4/5 Test #4: edge_tests .......................   Passed    3.70 sec
+5/5 Test #5: router_tests .....................   Passed    1.41 sec
+100% tests passed, 0 tests failed out of 5
+163 tests in total
+$ cmake -S . -B build-asan -DOUTPOST_SANITIZE=address,undefined && ... && ctest --test-dir build-asan
+1/5 Test #1: common_tests .....................   Passed    2.18 sec
+2/5 Test #2: storage_tests ....................   Passed    0.43 sec
+3/5 Test #3: write_api_tests ..................   Passed    2.01 sec
+4/5 Test #4: edge_tests .......................   Passed    6.12 sec
+5/5 Test #5: router_tests .....................   Passed    4.83 sec
+100% tests passed, 0 tests failed out of 5
+asan+ubsan reports: 0
+$ cmake -S . -B build-tsan -DOUTPOST_SANITIZE=thread && ... && ctest --test-dir build-tsan
+1/5 Test #1: common_tests .....................   Passed    2.88 sec
+2/5 Test #2: storage_tests ....................   Passed    0.42 sec
+3/5 Test #3: write_api_tests ..................   Passed    2.02 sec
+4/5 Test #4: edge_tests .......................   Passed    5.11 sec
+5/5 Test #5: router_tests .....................   Passed    3.37 sec
+100% tests passed, 0 tests failed out of 5
+tsan reports: 0
+$ python3 scripts/checkStyle.py && scripts/format.sh --check
+checkStyle: 47 files, 0 violations
+clang-format: 47 files, all formatted
+```
+
+### 2. Compose from scratch
+
+```
+$ docker compose down -v && docker compose up -d --build --wait
+real	0m19.782s
+SERVICE     STATUS                    PORTS
+dashboard   Up 2 seconds (healthy)    0.0.0.0:8090->8090/tcp, [::]:8090->8090/tcp
+edge-1      Up 7 seconds (healthy)    8081/tcp
+edge-2      Up 7 seconds (healthy)    8081/tcp
+edge-3      Up 7 seconds (healthy)    8081/tcp
+router      Up 5 seconds (healthy)    0.0.0.0:8080->8080/tcp, [::]:8080->8080/tcp
+storage     Up 12 seconds (healthy)   9091/tcp
+write-api   Up 10 seconds (healthy)   9090/tcp
+```
+
+### 3. Integration, dashboard acceptance, browser, shutdown
+
+```
+$ scripts/integrationTest.sh
+PASS  router has 3 edges on the ring (got 3)
+PASS  PUT served by the ring owner (edge-2 == edge-2)
+PASS  storage holds the written value (hello)
+PASS  read after write is a cache HIT (HIT)
+PASS  cold read is a MISS, then HIT (MISS, HIT)
+PASS  cold key is cached on its ring owner (edge-3 == edge-3)
+PASS  key 'it-1795264335?a b/c%#+' stored exactly (it-1795264335?a b/c%#+ tricky)
+PASS  HIT carries ETag, Last-Modified and Age ("1795264337758532-edge-3")
+PASS  Cache-Control has max-age and stale-if-error (max-age=60, stale-if-error=3600)
+PASS  If-None-Match with the ETag is 304 without a body (304 0)
+PASS  no-cache revalidates with the origin, which answers 304 (REVALIDATED)
+PASS  purge reaches all 3 edges and evicts the key once (complete, edges, evicted: True 3 1)
+PASS  read after purge is a MISS (MISS)
+PASS  burst from one client is rate-limited (    275 404     125 429 )
+PASS  another client is still served (404)
+PASS  every 429 carries Retry-After: 1 (125 of 125)
+PASS  port 8081 is not published (curl got 000)
+PASS  port 8082 is not published (curl got 000)
+PASS  port 8083 is not published (curl got 000)
+PASS  port 9090 is not published (curl got 000)
+PASS  port 9091 is not published (curl got 000)
+integrationTest: 0 failed check(s)
+```
+
+```
+$ scripts/dashboardAcceptance.sh
+PASS  dashboard page is served
+PASS  all 8 scripts are served as JavaScript modules
+PASS  static files are revalidated on every load (Cache-Control: no-cache)
+PASS  storage stats are proxied (True) but its keys are not (404)
+PASS  cold GET is a MISS (404, MISS)
+PASS  PUT is written directly (DIRECT via edge-2)
+PASS  warm GET is a HIT (HIT)
+PASS  conditional GET with the ETag is 304 (304)
+PASS  purge through the dashboard proxy (complete=true), then the read is a MISS
+PASS  simulated outage turned on ({"simulatedOutage":true,"storageHealthy":true})
+PASS  all breakers OPEN after 2970 ms
+PASS  cached read during the outage is STALE (200, STALE)
+PASS  write during the outage is queued (202 QUEUED)
+PASS  edge-1 shows the queued write (pending=1)
+PASS  breakers CLOSED and queue drained after 4805 ms
+PASS  queued write reached storage (during-outage)
+PASS  event log has breaker and reconcile events (purge: accept-1795264343 was not cached | breaker: CLOSED -> OPEN | breaker: OPEN -> HALF_OPEN | breaker: HALF_OPEN -> CLOSED | reconcile: started: 1 queued writes | reconcile: finished: 1 delivered, 0 rejected, 0 still queued)
+dashboardAcceptance: 0 failed check(s)
+```
+
+```
+$ powershell.exe -File dashboard/tests/browserClickTest.ps1 -OutDir ...
+guided demo finished after 9.2 s
+1 passed: WRITTEN edge-3 wrote it through write-api to storage, which made it durable (fsync) before answering, and cached the new value.
+2 passed: PURGED The router asked all 3 edges to drop the key; edge-3 had it cached and evicted it.
+3 passed: MISS edge-3 had no copy, so it fetched the value from storage and cached it.
+4 passed: HIT Served from edge-3's memory; the origin was not contacted.
+5 passed: 304 Not Modified Your copy is current: edge-3 matched your If-None-Match to its ETag and sent no body.
+6 passed: breakers OPEN Every breaker is OPEN: the edges now protect the origin and serve from cache.
+7 passed: STALE The origin is unreachable, so edge-3 served its older copy instead of failing.
+8 passed: QUEUED (202) The origin is unreachable, so edge-3 saved the write in its local write-ahead log and will deliver it once the origin is back.
+9 passed: REVALIDATED Breakers closed, the queue drained, and storage confirmed the edge holds the write made during the outage.
+flow caption: GET /key/demo-mwqeanrz REVALIDATED in 15.5 ms. edge-3 asked storage whether its copy is still current (If-None-Match); storage answered 304, so the value was not sent again.
+screenshot demoDesktopLight: 1280x3458, horizontal overflow: False
+load generator: 200 requests, 6 at a time. | HIT200 p509.7 ms p9515.1 ms p9916.2 ms
+request tester: PUT -> WRITTENHTTP 200 · edge-2 · 16.6 ms | GET -> HITHTTP 200 · edge-2 · 7.2 ms | PURGE -> PURGEDHTTP 200 · no edge · 9.8 ms | GET -> MISSHTTP 200 · edge-2 · 8.2 ms
+theme button: light -> dark -> auto
+breaker filter: breaker
+screenshot phoneLight: 390x8250, horizontal overflow: False
+screenshot desktopDark: 1280x3543, horizontal overflow: False
+screenshot phoneDark: 390x8250, horizontal overflow: False
+console errors/warnings/exceptions: 0
+cleanup: chrome stopped, profile removed: True
+```
+
+```
+$ scripts/shutdownTest.sh
+PASS storage: exit 0 after 114 ms
+PASS write-api: exit 0 after 113 ms
+PASS edge: exit 0 after 113 ms
+PASS router: exit 0 after 114 ms
+shutdownTest: all services shut down cleanly
+```
+
+### 4. Chaos test (`benchmarks/results/2026-11-21T123241Z-chaos`)
+
+```
+$ scripts/chaosTest.sh
+1795264437521 load stopped
+writes sent: 2835  acknowledged (200/202): 2834  not acknowledged: {'503': 1}
+acknowledged writes persisted with the exact value: 2834 / 2834
+reads of warm keys: 3557 total; during storage/write-api outages: 1569, failed: 0, served STALE: 1173
+reads during the edge-kill window (reported, not asserted): 267, failed: 11
+storage puts since its last restart: {'applied': 2664, 'duplicates': 59, 'superseded': 0} (duplicates = queued writes replayed after the mid-drain edge kill, applied only once)
+RESULT: PASS
+chaos results: benchmarks/results/2026-11-21T123241Z-chaos
+```
+
+Timeline:
+- all breakers OPEN 2759 ms after storage was killed;
+- all breakers OPEN 806 ms after write-api was killed;
+- `edge-2 killed mid-drain (queued at drain start=261; container now: exited exit=137)`.
+
+**Reported, not asserted.** These are outside the guarantees the test checks (acknowledged = persisted, no
+failed warm read during the *origin* outages):
+- 11 of the 267 reads made while the edge was being killed failed;
+- one write was answered `503` and so was never acknowledged.
+
+Earlier runs had 0 in that window. A request already in flight to an edge at the instant it dies is lost: the
+router retries only a *refused* connection, not one cut in the middle of a response. That is listed in the
+README's known limitations.
+
+### 5. Benchmarks
+
+Full speed (`benchmarks/results/2026-11-21T123424Z-benchmark`):
+```
+Measured phase: 357283 requests in 60s, 5955 requests/s (the 1000 setup PUTs are excluded). k6's own iteration rate, averaged over the whole run including the setup phase, is 5127/s; runs before 2026-11-21T1145 reported only that figure.
+
+| Latency (ms) | samples | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| GET, X-Cache HIT | 321377 | 3.40 | 9.28 | 13.22 | 47.65 |
+| GET, X-Cache MISS | 0 | – | – | – | – |
+| GET, X-Cache STALE | 0 | – | – | – | – |
+| PUT | 35906 | 13.59 | 21.18 | 26.89 | 52.42 |
+
+Cache hit ratio of GETs: 100.0%
+Status codes: 2xx 357283, 404 0, 429 0, 5xx 0, other 0
+k6 http_req_failed rate (includes setup): 0.0000%
+Storage WAL during this run (setup PUTs included): 36906 appends, 13405 fsyncs (2.75 appends per fsync)
+benchmark results: benchmarks/results/2026-11-21T123424Z-benchmark
+```
+
+Fixed 2587 requests/s, the same load as before group commit (`benchmarks/results/2026-11-21T123555Z-benchmark`):
+```
+Measured phase: 155222 requests in 60s, 2587 requests/s (the 1000 setup PUTs are excluded). k6's own iteration rate, averaged over the whole run including the setup phase, is 2230/s; runs before 2026-11-21T1145 reported only that figure.
+
+| Latency (ms) | samples | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| GET, X-Cache HIT | 139630 | 1.18 | 2.00 | 3.76 | 17.75 |
+| GET, X-Cache MISS | 0 | – | – | – | – |
+| GET, X-Cache STALE | 0 | – | – | – | – |
+| PUT | 15592 | 8.76 | 12.74 | 16.10 | 33.48 |
+
+Cache hit ratio of GETs: 100.0%
+Status codes: 2xx 155222, 404 0, 429 0, 5xx 0, other 0
+k6 http_req_failed rate (includes setup): 0.0000%
+Storage WAL during this run (setup PUTs included): 16592 appends, 12099 fsyncs (1.37 appends per fsync)
+benchmark results: benchmarks/results/2026-11-21T123555Z-benchmark
+```
+
+Conditional requests, 1 % writes (`benchmarks/results/2026-11-21T123727Z-conditional`):
+```
+Measured phase: 358751 requests in 60s, 5979 requests/s (the 1000 setup PUTs are excluded). k6's own iteration rate, averaged over the whole run including the setup phase, is 5118/s; runs before 2026-11-21T1145 reported only that figure.
+
+| Latency (ms) | samples | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| GET, If-None-Match matched: 304, no body | 240524 | 3.85 | 10.80 | 16.58 | 71.82 |
+| GET, If-None-Match outdated: 200 + new value | 66634 | 4.08 | 11.46 | 17.80 | 48.09 |
+| GET, no ETag yet: 200 HIT | 30028 | 4.55 | 11.02 | 14.88 | 37.17 |
+| GET no-cache: REVALIDATED (origin 304) | 17981 | 6.62 | 15.39 | 22.33 | 65.22 |
+| GET, X-Cache MISS | 2 | 6.98 | 7.62 | 7.68 | 7.69 |
+| PUT | 3582 | 13.08 | 24.60 | 31.98 | 54.13 |
+
+Conditional GETs answered 304: 240524 of 307158 (78.3%)
+no-cache GETs revalidated with a 304 from the origin: 17981 of 17983 (100.0%)
+Average body bytes: 304 0, 200 4126
+Status codes: 2xx 118227, 304 240524, 404 0, 429 0, 5xx 0, other 0
+k6 http_req_failed rate (includes setup): 0.0000%
+Storage WAL during this run (setup PUTs included): 4583 appends, 4432 fsyncs (1.03 appends per fsync)
+benchmark results: benchmarks/results/2026-11-21T123727Z-conditional
+```
+
+**These runs are 10–20 % slower than the gate runs earlier the same day** on the same laptop:
+
+| | Gate runs | This check |
+|---|---|---|
+| Full speed | 6550–7138 req/s | 5955 req/s |
+| At 2587/s: PUT p50 | 7.90 ms | 8.76 ms |
+| At 2587/s: cache-hit p50 | 0.98 ms | 1.18 ms |
+| Conditional 1 %: throughput | 8260 req/s | 5979 req/s |
+| Conditional 1 %: 304 share | 77.4 % | 78.3 % |
+
+Nothing in the code differs. A laptop under WSL2 and Docker Desktop varies with temperature and Windows
+background work, so treat single numbers from it as ±20 %. The conclusions are unchanged:
+- PUT p50 at the old load is about 13× better than the 113.90 ms before group commit;
+- cache-hit p50 and p95 stay under 10 ms;
+- the 304 share matches the churn model.
+
+### 6. CI
+
+Run 44903184983 for `67b2e40`: build-and-test, sanitizers (address,undefined), sanitizers (thread), style and
+compose-integration all **success** (4 min 44 s).
+
+### Still pending
+
+- **The owner's own checks:** the keyboard and hover checks in `docs/testing.md` §3 that the click test can't
+  do, and the hands-on tour (`docs/handsOnTour.md`).
+- **Phase H** (publication cleanup) runs only when the owner says "run Phase H".
+- **Merging** `v1-completion` into `main` needs the owner's approval.
+
+---
+
+## Final check 1: v1 (2026-11-20)
+
 
 **Step 3 of the master prompt.** The final verification ran on 2026-11-20 against branch `v1-completion` at
 commit `09a8c2e`. Two things were verified:
@@ -9,7 +296,7 @@ commit `09a8c2e`. Two things were verified:
 **Machine:** AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2 kernel 6.18, Docker Desktop 29.9.3,
 g++ 15.2.0, CMake 4.2.3. CI runs on GitHub's ubuntu-24.04 runners.
 
-## Summary
+### Summary
 
 | Area | Result |
 |---|---|
@@ -27,7 +314,7 @@ g++ 15.2.0, CMake 4.2.3. CI runs on GitHub's ubuntu-24.04 runners.
 | CI (GitHub Actions) | **PASS** (all 5 jobs) |
 | Dashboard in a real browser | **PENDING**: the owner's manual check (`docs/testing.md` §3) |
 
-## 1. Fresh clone: build and tests
+### 1. Fresh clone: build and tests
 
 ```
 $ git clone --branch v1-completion <repo> fresh && cd fresh
@@ -42,7 +329,7 @@ real	2m15.927s
 100% tests passed, 0 tests failed out of 5
 ```
 
-## 2. Sanitizers and style
+### 2. Sanitizers and style
 
 ```
 $ cmake -S . -B build-asan -DOUTPOST_SANITIZE=address,undefined && cmake --build build-asan -j && ASAN_OPTIONS=detect_leaks=1 ctest --test-dir build-asan
@@ -68,7 +355,7 @@ checkStyle: 44 files, 0 violations
 clang-format: 44 files, all formatted
 ```
 
-## 3. Docker Compose and the spec's demo sequence
+### 3. Docker Compose and the spec's demo sequence
 
 ```
 $ docker compose down -v   (previous cluster and volumes removed)
@@ -128,7 +415,7 @@ $ docker compose exec storage curl -s localhost:9091/key/foo
 {"key":"foo","value":"during-outage","version":1795210130525479,"writerId":"edge-3"}
 ```
 
-## 4. Integration, dashboard acceptance, graceful shutdown
+### 4. Integration, dashboard acceptance, graceful shutdown
 
 ```
 $ scripts/integrationTest.sh
@@ -175,7 +462,7 @@ shutdownTest: all services shut down cleanly
 exit status: 0
 ```
 
-## 5. Chaos test
+### 5. Chaos test
 
 Raw logs: `benchmarks/results/2026-11-20T212929Z-chaos/`.
 
@@ -214,7 +501,7 @@ chaos results: benchmarks/results/2026-11-20T212929Z-chaos
 exit status: 0
 ```
 
-## 6. Benchmark
+### 6. Benchmark
 
 Raw output: `benchmarks/results/2026-11-20T213128Z-benchmark/`.
 
@@ -259,7 +546,7 @@ benchmark results: benchmarks/results/2026-11-20T213128Z-benchmark
 exit status: 0
 ```
 
-## 7. CI
+### 7. CI
 
 ```
 $ gh run view 44819680690 --json headSha,conclusion,jobs
@@ -272,7 +559,7 @@ style: success
 build-and-test: success
 ```
 
-## Requirement-by-requirement
+### Requirement-by-requirement
 
 ### Functional requirements (project spec)
 
@@ -344,7 +631,7 @@ build-and-test: success
 | Acceptance 3: stats-API test passes; no console errors | **PASS** (test) / **PENDING** (console, manual) | |
 | Light/dark themes, phone width, keyboard access | **PENDING** (manual) | implemented in `dashboard/styles.css` / `index.html`; check in `docs/testing.md` §3 |
 
-## Still failing or pending
+### Still failing or pending
 
 Nothing in the automated verification failed. Open items:
 
