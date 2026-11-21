@@ -1,0 +1,6 @@
+writes sent: 3448  acknowledged (200/202): 3448  not acknowledged: {}
+acknowledged writes persisted with the exact value: 3448 / 3448
+reads of warm keys: 4275 total; during storage/write-api outages: 1689, failed: 0, served STALE: 1352
+reads during the edge-kill window (reported, not asserted): 373, failed: 0
+storage puts since its last restart: {'applied': 3189, 'duplicates': 50, 'superseded': 0} (duplicates = queued writes replayed after the mid-drain edge kill, applied only once)
+RESULT: PASS

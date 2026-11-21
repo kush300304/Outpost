@@ -5,6 +5,10 @@ settings; `k6-summary.json` holds k6's raw output; chaos runs keep their raw log
 
 | Run | What it is |
 |---|---|
+| `2026-11-21T105727Z-chaos` | **Chaos test**, gate I (group commit): 3448/3448 persisted |
+| `2026-11-21T105557Z-benchmark` | **Benchmark**, gate I (group commit): PUT p50 12.70 ms, 2.99 writes per fsync |
+| `2026-11-21T105412Z-benchmark` | Gate I repeat run (its WAL line spans two runs, see `NOTE.md`) |
+| `2026-11-21T105221Z-benchmark` | Gate I first run (before the script recorded WAL fsyncs) |
 | `2026-11-20T212929Z-chaos` | **Chaos test**, final check from a fresh clone (`docs/finalCheck.md`) |
 | `2026-11-20T205708Z-chaos` | **Chaos test** (gate E, cited in README): storage, write-api and a mid-drain edge killed under load |
 | `2026-11-20T202426Z-chaos` | Chaos test on an earlier build (before the Nagle and worker-pool fixes) |
