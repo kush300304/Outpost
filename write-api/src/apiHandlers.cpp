@@ -52,8 +52,13 @@ void registerHandlers(httplib::Server& server, StorageClient& client, const Hand
         s_totalGets.fetch_add(1, std::memory_order_relaxed);
 
         bool simulated = outage->load();
-        StorageResponse storageRes = simulated ? StorageResponse() : client.get(key);
+        StorageResponse storageRes =
+            simulated ? StorageResponse() : client.get(key, req.get_header_value("If-None-Match"));
         std::string content = storageRes.body;
+        if (!storageRes.etag.empty())
+        {
+            res.set_header("ETag", storageRes.etag);
+        }
         if (simulated)
         {
             res.status = 503;
@@ -75,7 +80,14 @@ void registerHandlers(httplib::Server& server, StorageClient& client, const Hand
                           .dump();
             s_totalErrors.fetch_add(1, std::memory_order_relaxed);
         }
-        res.set_content(content, "application/json");
+        else if (storageRes.httpStatus == 304)
+        {
+            res.status = 304;
+        }
+        if (res.status != 304)
+        {
+            res.set_content(content, "application/json");
+        }
     });
 
     // ── PUT /key/:id — validate then proxy the versioned write to storage ─
@@ -105,9 +117,9 @@ void registerHandlers(httplib::Server& server, StorageClient& client, const Hand
             error = "\"version\" must be an unsigned integer > 0";
         }
         else if (!request.contains("writerId") || !request["writerId"].is_string() ||
-                 request["writerId"].get_ref<const std::string&>().empty())
+                 !common::isValidWriterId(request["writerId"].get_ref<const std::string&>()))
         {
-            error = "\"writerId\" must be a non-empty string";
+            error = "\"writerId\" must be 1-64 characters from [A-Za-z0-9._-]";
         }
 
         std::string content;

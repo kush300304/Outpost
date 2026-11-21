@@ -28,7 +28,8 @@ struct HandlerOptions
 ///
 /// Routes:
 ///   GET    /health       → 200 when storage answers its /health within 1 s, else 503
-///   GET    /key/:id      → proxy GET to storage: 200, 404, or 502 when storage fails
+///   GET    /key/:id      → proxy GET to storage: 200, 404, or 502 when storage fails;
+///                           If-None-Match is forwarded, and storage's 304 and ETag pass through
 ///   PUT    /key/:id      → validate {"value","version","writerId"}, then proxy to storage
 ///   GET    /debug/stats  → service diagnostics
 ///   GET    /admin/outage → {"simulatedOutage","storageHealthy"} (only with options.adminEnabled)
