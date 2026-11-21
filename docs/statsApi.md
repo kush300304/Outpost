@@ -19,9 +19,13 @@ Conventions:
 | `cache.size` | number | Entries currently cached (fresh and expired). |
 | `cache.capacity` | number | Maximum entries before LRU eviction. |
 | `cache.ttlMs` | number | Freshness lifetime of an entry; `0` means entries never expire. |
+| `cache.staleIfErrorMs` | number | How long past its ttl an entry may still be served stale (`stale-if-error`). |
 | `cache.hits` | number | Reads answered from a fresh cached entry. |
 | `cache.misses` | number | Cache lookups that found nothing or an expired entry. |
 | `cache.staleServes` | number | Reads answered from the cache with `X-Cache: STALE`. |
+| `cache.revalidated` | number | Expired or `no-cache` reads the origin confirmed unchanged with `304` (`X-Cache: REVALIDATED`). |
+| `cache.notModified` | number | Reads answered `304 Not Modified` because the client's `If-None-Match` matched. |
+| `cache.purges` | number | `POST /purge/key/<k>` requests handled, whether or not the key was cached. |
 | `cache.evictions` | number | Entries evicted to make room. |
 | `cache.hitRate` | number | `hits / (hits + misses) × 100`, `0` before the first lookup. |
 | `circuitBreaker.state` | string | `"CLOSED"`, `"OPEN"` or `"HALF_OPEN"`. |
@@ -46,7 +50,7 @@ Conventions:
 | `requests.writes` | number | `PUT /key` requests. |
 | `events` | array | The latest 100 events, oldest first. |
 | `events[].atMs` | number | When the event happened. |
-| `events[].type` | string | `"breaker"`, `"reconcile"` or `"rateLimit"`. |
+| `events[].type` | string | `"breaker"`, `"reconcile"`, `"rateLimit"` or `"purge"`. |
 | `events[].message` | string | Human-readable description. |
 
 ## Events
@@ -55,6 +59,7 @@ Conventions:
 - `reconcile`: `started` and `finished` around every queue drain, with the counts.
 - `rateLimit`: at most one per second per edge, with the number of `429`s since the previous rate-limit
   event and the last client rejected.
+- `purge`: one per `POST /purge/key/<k>`, saying whether the key was evicted or was not cached.
 
 ## Example
 

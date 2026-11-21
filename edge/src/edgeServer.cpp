@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <ctime>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -14,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "common/httpCache.h"
 #include "common/requestLimits.h"
 
 using json = nlohmann::json;
@@ -100,6 +102,12 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         bool admitted = bucketFor(clientId)->tryConsume();
         bool closed = breaker_.state() == common::BreakerState::CLOSED;
         auto cached = admitted ? cache_.lookup(key) : std::nullopt;
+        std::string requestCacheControl = req.get_header_value("Cache-Control");
+        bool forceRevalidate = requestCacheControl.find("no-cache") != std::string::npos ||
+                               requestCacheControl.find("max-age=0") != std::string::npos;
+        bool staleUsable = cached && (config_.cacheTtl.count() == 0 ||
+                                      cached->age <= config_.cacheTtl + config_.staleIfError);
+        std::optional<common::LruCache::Lookup> served;
         if (!admitted)
         {
             recordRateLimit(clientId);
@@ -108,31 +116,51 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             cacheHeader.clear();
             body = json::parse(kRateLimitedBody);
         }
-        else if (cached && (cached->fresh || !closed))
+        else if (cached && cached->fresh && closed && !forceRevalidate)
         {
-            cacheHeader = closed ? "HIT" : "STALE";
-            staleServes_.fetch_add(closed ? 0 : 1, std::memory_order_relaxed);
-            body = {{"key", key}, {"value", cached->value}};
+            cacheHeader = "HIT";
+            served = cached;
+        }
+        else if (!closed && staleUsable)
+        {
+            cacheHeader = "STALE";
+            staleServes_.fetch_add(1, std::memory_order_relaxed);
+            served = cached;
         }
         else if (!closed)
         {
             res.status = 503;
             body = {{"error", "origin_unavailable"},
-                    {"message", "origin unavailable and key not cached at this edge"},
+                    {"message", "origin unavailable and no usable copy at this edge"},
                     {"key", key}};
         }
         else
         {
-            OriginResponse origin = originClient_.get(key);
+            // Missing, expired or revalidation requested: ask the origin, conditionally when a
+            // copy exists so an unchanged value is not sent again.
+            OriginResponse origin = originClient_.get(key, cached ? cached->tag : "");
             json parsed = json::parse(origin.body, nullptr, false);
             bool found = origin.httpStatus == 200 && parsed.is_object() &&
                          parsed.contains("value") && parsed["value"].is_string();
-            if (found)
+            if (origin.httpStatus == 304 && cached)
             {
                 breaker_.recordSuccess();
-                cache_.put(key, parsed["value"].get<std::string>(),
-                           parsed.value("version", uint64_t{0}));
-                body = {{"key", key}, {"value", parsed["value"]}};
+                cache_.put(key, cached->value, cached->version, cached->tag);
+                revalidated_.fetch_add(1, std::memory_order_relaxed);
+                cacheHeader = "REVALIDATED";
+                served = cached;
+                served->age = std::chrono::milliseconds(0);
+            }
+            else if (found)
+            {
+                breaker_.recordSuccess();
+                uint64_t version = parsed.value("version", uint64_t{0});
+                std::string writerId = parsed.value("writerId", std::string());
+                std::string etag = version > 0 ? common::makeEtag(version, writerId) : "";
+                std::string value = parsed["value"].get<std::string>();
+                cache_.put(key, value, version, etag);
+                served = common::LruCache::Lookup{value, true, version, etag,
+                                                  std::chrono::milliseconds(0)};
             }
             else if (origin.httpStatus == 404)
             {
@@ -141,12 +169,12 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                 res.status = 404;
                 body = {{"error", "not_found"}, {"key", key}};
             }
-            else if (cached)
+            else if (staleUsable)
             {
                 breaker_.recordFailure();
                 cacheHeader = "STALE";
                 staleServes_.fetch_add(1, std::memory_order_relaxed);
-                body = {{"key", key}, {"value", cached->value}};
+                served = cached;
             }
             else
             {
@@ -160,12 +188,59 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
                     {"key", key}};
             }
         }
+        bool notModified = false;
+        if (served)
+        {
+            // Validators come from the write that produced the value; freshness from its age.
+            if (!served->tag.empty())
+            {
+                res.set_header("ETag", served->tag);
+            }
+            if (served->version > 0)
+            {
+                std::time_t writtenAt = static_cast<std::time_t>(served->version / 1000000);
+                std::tm utc{};
+                gmtime_r(&writtenAt, &utc);
+                char date[64];
+                std::strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &utc);
+                res.set_header("Last-Modified", date);
+            }
+            long long ageSeconds = duration_cast<seconds>(served->age).count();
+            long long ttlSeconds = duration_cast<seconds>(config_.cacheTtl).count();
+            std::string maxAge = config_.cacheTtl.count() > 0
+                                     ? "max-age=" +
+                                           std::to_string(std::max(0LL, ttlSeconds - ageSeconds)) +
+                                           ", "
+                                     : std::string();
+            long long staleSeconds = duration_cast<seconds>(config_.staleIfError).count();
+            res.set_header("Age", std::to_string(ageSeconds));
+            res.set_header("Cache-Control",
+                           maxAge + "stale-if-error=" + std::to_string(staleSeconds));
+            notModified = common::etagMatches(req.get_header_value("If-None-Match"), served->tag);
+            res.status = notModified ? 304 : 200;
+            notModified_.fetch_add(notModified ? 1 : 0, std::memory_order_relaxed);
+            body = {{"key", key}, {"value", served->value}};
+        }
         if (!cacheHeader.empty())
         {
             res.set_header("X-Cache", cacheHeader);
         }
         res.set_header("X-Node", config_.nodeId);
-        res.set_content(body.dump(), "application/json");
+        if (!notModified)
+        {
+            res.set_content(body.dump(), "application/json");
+        }
+    });
+
+    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req,
+                                              httplib::Response& res) {
+        std::string key = req.matches[1].str();
+        bool purged = cache_.remove(key);
+        purges_.fetch_add(1, std::memory_order_relaxed);
+        recordEvent("purge", key + (purged ? " evicted" : " was not cached"));
+        res.set_content(
+            json({{"key", key}, {"purged", purged}, {"nodeId", config_.nodeId}}).dump(),
+            "application/json");
     });
 
     server_.Put(R"(/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
@@ -255,8 +330,10 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             }
             if (!rejected)
             {
-                cache_.put(key, value, version);
+                std::string etag = common::makeEtag(version, config_.nodeId);
+                cache_.put(key, value, version, etag);
                 res.set_header("X-Write-Mode", forwarded ? "DIRECT" : "QUEUED");
+                res.set_header("ETag", etag);
             }
         }
         res.set_header("X-Node", config_.nodeId);
@@ -294,9 +371,13 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
              {{"size", cache_.size()},
               {"capacity", cache_.capacity()},
               {"ttlMs", cache_.ttl().count()},
+              {"staleIfErrorMs", config_.staleIfError.count()},
               {"hits", cacheStats.hits},
               {"misses", cacheStats.misses},
               {"staleServes", staleServes_.load()},
+              {"revalidated", revalidated_.load()},
+              {"notModified", notModified_.load()},
+              {"purges", purges_.load()},
               {"evictions", cacheStats.evictions},
               {"hitRate", cacheStats.hitRate()}}},
             {"circuitBreaker",
