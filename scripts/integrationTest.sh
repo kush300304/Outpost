@@ -74,19 +74,30 @@ check "If-None-Match with the ETag is 304 without a body ($notModified)" "$([[ "
 HEADER=X-Cache revalidated=$(header -H 'Cache-Control: no-cache' "$ROUTER/key/$key")
 check "no-cache revalidates with the origin, which answers 304 ($revalidated)" \
     "$([[ "$revalidated" == REVALIDATED ]] && echo true)"
+started=$(date +%s%N)
 purge=$(curl -s -X POST "$ROUTER/purge/key/$key" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["complete"], len(d["edges"]), sum(e["purged"] for e in d["edges"]))')
 check "purge reaches all 3 edges and evicts the key once (complete, edges, evicted: $purge)" \
     "$([[ "$purge" == "True 3 1" ]] && echo true)"
+purgeMs=$((($(date +%s%N) - started) / 1000000))
+check "purge without a request body answers in under 1 s ($purgeMs ms)" "$([[ "$purgeMs" -lt 1000 ]] && echo true)"
 HEADER=X-Cache afterPurge=$(header "$ROUTER/key/$key")
 check "read after purge is a MISS ($afterPurge)" "$([[ "$afterPurge" == MISS ]] && echo true)"
 
 # 6. Per-client rate limiting under a burst.
-burst=$(seq 400 | xargs -P 40 -I{} curl -s -D - -o /dev/null -H "X-Forwarded-For: 198.51.100.77" \
-    "$ROUTER/key/$run-hot" | tr -d '\r')
-codes=$(echo "$burst" | awk '/^HTTP\//{print $2}' | sort | uniq -c | tr '\n' ' ')
-limited=$(echo "$burst" | grep -c '^HTTP/1.1 429')
-retries=$(echo "$burst" | grep -ci '^retry-after: 1$')
-check "burst from one client is rate-limited ($codes)" "$([[ -n "$limited" && "$limited" -gt 0 ]] && echo true)"
+# One curl process reusing keep-alive connections sends the burst much faster than the bucket refills
+# (burst 200, then 100 per second, per client and edge), so 600 requests exceed it even on a slow machine.
+config=$(mktemp)
+for i in $(seq 600); do printf 'url = "%s"\noutput = "/dev/null"\n' "$ROUTER/key/$run-hot" >>"$config"; done
+started=$(date +%s%N)
+burst=$(curl -s --parallel --parallel-max 50 -H "X-Forwarded-For: 198.51.100.77" \
+    -w '%{http_code} %header{retry-after}\n' -K "$config")
+burstMs=$((($(date +%s%N) - started) / 1000000))
+rm -f "$config"
+codes=$(echo "$burst" | awk '{print $1}' | sort | uniq -c | tr '\n' ' ')
+limited=$(echo "$burst" | grep -c '^429')
+retries=$(echo "$burst" | grep -c '^429 1$')
+check "burst of 600 from one client in $burstMs ms is rate-limited ($codes)" \
+    "$([[ "$limited" -gt 0 ]] && echo true)"
 other=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 198.51.100.78" "$ROUTER/key/$run-hot")
 check "another client is still served ($other)" "$([[ "$other" != 429 ]] && echo true)"
 check "every 429 carries Retry-After: 1 ($retries of $limited)" "$([[ "$retries" == "$limited" ]] && echo true)"
