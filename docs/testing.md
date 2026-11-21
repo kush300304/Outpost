@@ -46,6 +46,11 @@ Start the cluster with `docker compose up -d --build --wait`. Use a fresh key, o
 Use a fresh tab (or reload once) after `docker compose up --build`; nginx tells the browser to revalidate the
 page and its scripts, so an older cached version is never mixed with a newer one.
 
+Automated version (Windows with Chrome): `dashboard/tests/browserClickTest.ps1` drives an invisible Chrome
+through the guided demo, the tools, the theme button and a filter, and saves desktop, phone and dark-theme
+screenshots (usage in its header). It must report every step `passed`, 0 console errors and no horizontal
+overflow. It does not replace the keyboard and hover checks below.
+
 Guided demo, from the UI alone:
 - [ ] The page loads; the header pill reads `Live · <time> · 3/3 edges answering` and ticks every second.
 - [ ] *How a request flows* shows Client → Router → edge-1..3 → write-api → storage, every node **healthy**,
