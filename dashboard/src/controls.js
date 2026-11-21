@@ -9,6 +9,7 @@ import { showRequest } from './flowDiagram.js';
 import { refresh } from './live.js';
 
 let outageOn = false;
+let seededKeys = 0;
 
 /** Shows one request's result in the tester: status, cache result, headers and body. */
 function showResponse(result) {
@@ -101,6 +102,27 @@ export function initControls() {
         let issued = 0;
         button.disabled = true;
 
+        // Write the keys that this page has not written yet, so reads can be served from the cache.
+        let seedFailures = 0;
+        if (document.getElementById('loadSeed').checked && seededKeys < range) {
+            let next = seededKeys;
+            progress.textContent = `Writing keys load-${seededKeys} … load-${range - 1} first…`;
+            const writer = async () => {
+                while (next < range) {
+                    const index = next;
+                    next += 1;
+                    const response = await fetchJson(`/router/key/load-${index}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'text/plain' },
+                        body: `load value ${index}`,
+                    }, 5000);
+                    seedFailures += response.status === 200 || response.status === 202 ? 0 : 1;
+                }
+            };
+            await Promise.all(Array.from({ length: concurrency }, writer));
+            seededKeys = seedFailures === 0 ? range : seededKeys;
+        }
+
         const worker = async () => {
             while (issued < total) {
                 issued += 1;
@@ -153,7 +175,8 @@ export function initControls() {
             numbers.appendChild(wrapper);
         }
         document.getElementById('loadResult').hidden = false;
-        progress.textContent = `${total} requests, ${concurrency} at a time.`;
+        progress.textContent = `${total} requests, ${concurrency} at a time.`
+            + (seedFailures > 0 ? ` ${seedFailures} of the key writes failed.` : '');
         button.disabled = false;
     });
 }

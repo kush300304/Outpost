@@ -179,7 +179,7 @@ export function renderOrigin(live) {
     }
     const recent = live.storageWindow;
     const perFsync = recent && recent.fsyncs > 0
-        ? `${(recent.appends / recent.fsyncs).toFixed(2)} (${count(recent.appends)} writes, last ${recent.seconds} s)`
+        ? `${(recent.appends / recent.fsyncs).toFixed(2)} (${count(recent.appends)} write${recent.appends === 1 ? '' : 's'}, last ${recent.seconds} s)`
         : 'no writes in the last 10 s';
     fillMetrics(document.getElementById('originMetrics'), storage ? [
         ['Keys stored', count(storage.totalKeys), 'Keys in storage, the source of truth.'],

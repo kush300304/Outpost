@@ -9,6 +9,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <title>Outpost dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%230f766e'/%3E%3Ccircle cx='8' cy='8' r='3' fill='white'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="styles.css">
     <script type="module" src="src/main.js"></script>
 </head>
@@ -163,11 +164,15 @@
 
             <form class="card" id="loadForm">
                 <h2>Mini load generator</h2>
-                <p class="hint">GETs keys <code>load-0</code> … <code>load-(K-1)</code> through the router.</p>
+                <p class="hint">GETs random keys <code>load-0</code> … <code>load-(K-1)</code> through the router.</p>
                 <div class="fieldRow three">
                     <label class="field">Requests <input id="loadCount" type="number" min="1" max="5000" value="300"></label>
                     <label class="field">Parallel <input id="loadConcurrency" type="number" min="1" max="32" value="6"></label>
                     <label class="field">Keys <input id="loadRange" type="number" min="1" max="10000" value="50"></label>
+                </div>
+                <div class="checks">
+                    <label title="Without this, keys nobody wrote are read: each read is a 404 MISS and nothing is cached.">
+                        <input type="checkbox" id="loadSeed" checked> Write the K keys first (once per page load)</label>
                 </div>
                 <button type="submit" id="loadStart">Run</button>
                 <p class="hint" id="loadProgress" aria-live="polite"></p>
