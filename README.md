@@ -276,6 +276,9 @@ Light and dark themes follow the system setting (or the *Theme* button), and the
 All numbers come from real runs on one machine: AMD Ryzen 5 5600H (12 threads), 7.4 GiB RAM, Windows WSL2
 with Docker Desktop 29.9.3. Raw output is in `docs/gates/` and `benchmarks/results/`.
 
+Commit hashes quoted in those records point into the development history, which was squashed for publication
+(see [docs/gates/README.md](docs/gates/README.md)).
+
 A **final check from a fresh clone** reran everything after the last code change ([docs/finalCheck.md](docs/finalCheck.md)):
 - 163 tests, sanitizers clean;
 - integration 21/21, dashboard 18/18, browser 9/9;
@@ -373,7 +376,7 @@ build was then replayed at exactly that rate (`RATE=2587`).
     connections, not ones cut mid-response: 11 of 267 reads in the final chaos run's edge-kill window.
 - **Logs:** plain text, without a request id that follows one request across services.
 
-v2 ideas are listed in [docs/roadmap.md](docs/roadmap.md#v2-ideas-not-built):
+v2 ideas (not built):
 - structured JSON logs with a request id carried across hops;
 - purge by tag or prefix;
 - Kafka cache invalidation between edges;

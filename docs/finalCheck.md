@@ -3,6 +3,9 @@
 Each final check rebuilds and reruns everything from a **fresh clone** of the published branch, in an empty
 directory: no build tree, dependency cache or Docker volume is reused. CI runs on GitHub for the same commit.
 
+Both checks ran on the development branch `v1-completion`. Its history was squashed into the v1.0.0 commit for
+publication, so the commit hashes below point into that development history.
+
 - [Final check 2](#final-check-2-after-phases-i-and-j-2026-11-21): after group commit (Phase I) and HTTP caching
   with purge (Phase J), on 2026-11-21.
 - [Final check 1](#final-check-1-v1-2026-11-20): v1, on 2026-11-20.
@@ -287,7 +290,7 @@ compose-integration all **success** (4 min 44 s).
 ## Final check 1: v1 (2026-11-20)
 
 
-**Step 3 of the master prompt.** The final verification ran on 2026-11-20 against branch `v1-completion` at
+The v1 final verification ran on 2026-11-20 against the development branch `v1-completion` at
 commit `09a8c2e`. Two things were verified:
 - a **fresh clone** (`git clone --branch v1-completion`) in an empty directory, with no build tree,
   dependency cache or Docker volume reused;
@@ -648,6 +651,5 @@ Nothing in the automated verification failed. Open items:
    - The breaker opens 3–5 s after an outage in compose. The low end is the 3 × 1 s heartbeat; when the dead
      peer's name must be looked up, each check can also spend up to the 1 s DNS bound.
    - The storage WAL is never compacted; there are no deletes; ordering relies on wall clocks; the router's
-     edge list is static. These are listed in the README and `docs/roadmap.md`.
-3. **Phase H (publication cleanup)** is defined in `docs/roadmap.md` and has **not** been run. It waits for
-   the owner's "run Phase H".
+     edge list is static. These are listed in the README.
+3. **Publication cleanup** had not been run at that point; it ran before the v1.0.0 release.

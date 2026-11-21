@@ -4,8 +4,7 @@ This tour takes you through the whole project in order: what Outpost is for, wha
 check with your own eyes that it does it. Every step has the same shape:
 
 - **Why:** the motive, the problem this piece solves.
-- **Do:** commands to run, from the repository root (`~/outpost`) in a WSL terminal. In Claude Code, prefix a
-  command with `!` to run it in the session.
+- **Do:** commands to run in a terminal (Linux, macOS, or WSL on Windows), from the repository root.
 - **You should see:** what a pass looks like.
 - **What it proves:** the guarantee behind it.
 - **Check yourself:** one question to answer out loud before moving on.
@@ -402,7 +401,7 @@ visible; CI makes sure nobody forgets to run anything.
 **Do** (optional, about 5 minutes each):
 ```bash
 cmake -S . -B build-tsan -DOUTPOST_SANITIZE=thread && cmake --build build-tsan -j && ctest --test-dir build-tsan
-gh run list --branch v1-completion --limit 3
+gh run list --branch main --limit 3
 ```
 
 **You should see:** 100 % passed with no `ThreadSanitizer` warnings, and green CI runs.
@@ -422,5 +421,5 @@ gh run list --branch v1-completion --limit 3
 | G5 standard HTTP caching | Step 6, dashboard steps 2–5 | Integration test; conditional benchmark (77 % 304s) |
 | G6 fast and durable | Step 9 | Benchmarks: hits 0.98 ms p50; PUT 113.9 → 7.9 ms with group commit |
 
-If you can answer every "check yourself" question, you can explain Outpost in an interview. The model answers
-are in `docs/interviewPrep.md`, and the full reasoning is in `docs/designWalkthrough.md`.
+If you can answer every "check yourself" question, you can explain Outpost in an interview. The reasoning
+behind every answer is in `docs/designWalkthrough.md`.
