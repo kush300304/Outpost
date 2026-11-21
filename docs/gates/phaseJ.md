@@ -165,3 +165,8 @@ clang-format: 47 files, all formatted
 ## Result
 
 Gate J passed.
+
+## Addendum: what req/s means
+
+The req/s column above is k6's iteration rate over the whole run, including its ~6 s setup phase. The rate during the
+60 s measured phase is about 10 % higher (requests / 60 s): 5660 and 8260. See `benchmarks/results/README.md`.

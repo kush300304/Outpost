@@ -125,3 +125,23 @@ clang-format: 47 files, all formatted
 ## Result
 
 Gate I passed.
+
+## Addendum (2026-11-21, later the same day): the same load as before, and what req/s means
+
+- **req/s above** is k6's iteration rate, which averages over the whole run *including* its ~6 s setup phase. The
+  rate during the 60 s measured phase is about 10 % higher (requests / 60 s): 2587 for the baseline and 6759 for
+  `2026-11-21T105557Z`. The ratios above are unchanged because every run used the same definition.
+- **Same load, before and after.** The closed-loop runs above change the load as well as the code. To compare at
+  equal load, `RATE=2587 scripts/runBenchmark.sh 60s 32` (`d073bd5`) holds the arrival rate at the baseline's
+  measured-phase rate → `2026-11-21T114512Z-benchmark`:
+
+  | At 2587 req/s | GET HIT p50 / p95 / p99 | PUT p50 / p95 / p99 | writes per fsync |
+  |---|---|---|---|
+  | Before (`2026-11-20T213128Z`, per-write fsync) | 0.96 / 1.24 / 1.64 ms | 113.90 / 123.73 / 214.76 ms | 1 |
+  | After (group commit) | 0.98 / 1.36 / 2.45 ms | **7.90 / 10.82 / 13.92 ms** | 1.33 |
+
+  - At equal load, reads are unchanged at the median (+0.02 ms) and +0.8 ms at p99, still far below the 10 ms
+    target. Writes are about 14× faster at the median.
+  - k6 could not start 15 of the 155206 requests on time (`dropped_iterations`).
+  - This supports the explanation in §2: the GET latency increase in the closed-loop runs comes from the 2.6×
+    higher load, not from slower reads.
