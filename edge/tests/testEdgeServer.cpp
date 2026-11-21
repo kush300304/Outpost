@@ -103,15 +103,30 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(healthDelayMs.load()));
             res.status = healthy ? 200 : 503;
         });
-        http_.server.Get(
-            R"(/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
-                ++keyGets;
-                std::string key = req.matches[1].str();
-                res.status = getStatus ? getStatus(key) : 404;
-                json body = res.status == 200 ? json({{"key", key}, {"value", "origin-" + key}})
-                                              : json({{"error", "not_found"}});
-                res.set_content(body.dump(), "application/json");
-            });
+        http_.server.Get(R"(/key/(.+))",
+                         [this](const httplib::Request& req, httplib::Response& res) {
+                             ++keyGets;
+                             std::string key = req.matches[1].str();
+                             std::string ifNoneMatch = req.get_header_value("If-None-Match");
+                             {
+                                 std::lock_guard<std::mutex> lock(mutex_);
+                                 lastIfNoneMatch_ = ifNoneMatch;
+                             }
+                             res.status = getStatus ? getStatus(key) : 404;
+                             if (res.status == 200 && answerNotModified && !ifNoneMatch.empty())
+                             {
+                                 res.status = 304;
+                             }
+                             if (res.status != 304)
+                             {
+                                 json body = res.status == 200 ? json({{"key", key},
+                                                                       {"value", "origin-" + key},
+                                                                       {"version", kOriginVersion},
+                                                                       {"writerId", "origin"}})
+                                                               : json({{"error", "not_found"}});
+                                 res.set_content(body.dump(), "application/json");
+                             }
+                         });
         http_.server.Put(R"(/key/(.+))", [this](const httplib::Request& req,
                                                 httplib::Response& res) {
             std::string key = req.matches[1].str();
@@ -164,12 +179,21 @@ public:
     std::atomic<int> healthDelayMs{0};
     std::atomic<int> keyGets{0};
     std::function<int(const std::string& key)> getStatus;
+    std::atomic<bool> answerNotModified{false};  ///< 304 for conditional GETs of a 200 key.
+    static constexpr uint64_t kOriginVersion = 1700000000000000ull;  // 2023-11-14T22:13:20Z
+
+    std::string lastIfNoneMatch() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastIfNoneMatch_;
+    }
     std::function<int(const std::string& key, int attempt)> putStatus;
     std::function<void(const std::string& key)> onPut;
 
 private:
     mutable std::mutex mutex_;
     std::vector<Put> puts_;
+    std::string lastIfNoneMatch_;
     BackgroundServer http_;
 };
 
@@ -761,4 +785,127 @@ TEST_F(EdgeServerTest, IdleKeepAliveConnectionsDoNotStarveNewClients)
                          .count();
     ASSERT_TRUE(res);
     EXPECT_LT(elapsedMs, 1000) << "a new client waited " << elapsedMs << " ms for a worker";
+}
+
+// ── Phase J: standard HTTP caching ──────────────────────────────────────
+
+TEST_F(EdgeServerTest, CachedReadsCarryValidatorsAndFreshness)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 60000ms;
+    cfg.staleIfError = 3600000ms;
+    RunningEdge edge(cfg);
+    auto miss = edge.client().Get("/key/k");
+    auto hit = edge.client().Get("/key/k");
+    ASSERT_TRUE(miss && hit);
+    EXPECT_EQ(hit->get_header_value("X-Cache"), "HIT");
+    EXPECT_EQ(hit->get_header_value("ETag"), "\"1700000000000000-origin\"");
+    EXPECT_EQ(hit->get_header_value("Last-Modified"), "Tue, 14 Nov 2023 22:13:20 GMT");
+    EXPECT_FALSE(hit->get_header_value("Age").empty());
+    std::string cacheControl = hit->get_header_value("Cache-Control");
+    EXPECT_EQ(cacheControl.rfind("max-age=", 0), 0u) << cacheControl;
+    EXPECT_NE(cacheControl.find("stale-if-error=3600"), std::string::npos) << cacheControl;
+}
+
+TEST_F(EdgeServerTest, MatchingIfNoneMatchIsAnswered304FromTheCache)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    RunningEdge edge(config(origin.port()));
+    auto first = edge.client().Get("/key/k");
+    ASSERT_TRUE(first);
+    std::string etag = first->get_header_value("ETag");
+    auto conditional = edge.client().Get("/key/k", {{"If-None-Match", etag}});
+    ASSERT_TRUE(conditional);
+    EXPECT_EQ(conditional->status, 304);
+    EXPECT_TRUE(conditional->body.empty());
+    EXPECT_EQ(conditional->get_header_value("ETag"), etag);
+    EXPECT_EQ(origin.keyGets.load(), 1);
+    EXPECT_EQ(edge.stats()["cache"]["notModified"], 1);
+}
+
+TEST_F(EdgeServerTest, ExpiredEntryIsRevalidatedWithoutResendingTheValue)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 100ms;
+    RunningEdge edge(cfg);
+    auto first = edge.client().Get("/key/k");
+    ASSERT_TRUE(first);
+    std::this_thread::sleep_for(150ms);
+    origin.answerNotModified = true;
+    auto revalidated = edge.client().Get("/key/k");
+    ASSERT_TRUE(revalidated);
+    EXPECT_EQ(revalidated->status, 200);
+    EXPECT_EQ(revalidated->get_header_value("X-Cache"), "REVALIDATED");
+    EXPECT_EQ(json::parse(revalidated->body)["value"], "origin-k");
+    EXPECT_EQ(origin.lastIfNoneMatch(), first->get_header_value("ETag"));
+    auto hit = edge.client().Get("/key/k");
+    ASSERT_TRUE(hit);
+    EXPECT_EQ(hit->get_header_value("X-Cache"), "HIT");
+    EXPECT_EQ(edge.stats()["cache"]["revalidated"], 1);
+}
+
+TEST_F(EdgeServerTest, NoCacheRequestRevalidatesAFreshEntry)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    RunningEdge edge(config(origin.port()));
+    ASSERT_TRUE(edge.client().Get("/key/k"));
+    origin.answerNotModified = true;
+    auto res = edge.client().Get("/key/k", {{"Cache-Control", "no-cache"}});
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->get_header_value("X-Cache"), "REVALIDATED");
+    EXPECT_EQ(origin.keyGets.load(), 2);
+}
+
+TEST_F(EdgeServerTest, StaleServingIsBoundedByStaleIfError)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    EdgeConfig cfg = config(origin.port());
+    cfg.cacheTtl = 50ms;
+    cfg.staleIfError = 100ms;
+    RunningEdge edge(cfg);
+    ASSERT_TRUE(edge.client().Get("/key/k"));
+    origin.healthy = false;
+    ASSERT_TRUE(waitUntil([&] { return edge.breakerState() == "OPEN"; }, 1000ms));
+    std::this_thread::sleep_for(200ms);  // older than ttl + stale-if-error
+    auto res = edge.client().Get("/key/k");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 503);
+}
+
+TEST_F(EdgeServerTest, PurgeEvictsTheKey)
+{
+    FakeOrigin origin;
+    origin.getStatus = [](const std::string&) { return 200; };
+    RunningEdge edge(config(origin.port()));
+    ASSERT_TRUE(edge.client().Get("/key/k"));
+    auto purge = edge.client().Post("/purge/key/k", "", "text/plain");
+    ASSERT_TRUE(purge);
+    EXPECT_EQ(purge->status, 200);
+    EXPECT_EQ(json::parse(purge->body)["purged"], true);
+    auto after = edge.client().Get("/key/k");
+    ASSERT_TRUE(after);
+    EXPECT_EQ(after->get_header_value("X-Cache"), "MISS");
+    EXPECT_EQ(origin.keyGets.load(), 2);
+    EXPECT_EQ(edge.stats()["cache"]["purges"], 1);
+}
+
+TEST_F(EdgeServerTest, WriteResponseCarriesTheWritesEtag)
+{
+    FakeOrigin origin;
+    RunningEdge edge(config(origin.port()));
+    auto put = edge.client().Put("/key/k", "v", "text/plain");
+    ASSERT_TRUE(put);
+    std::string etag = put->get_header_value("ETag");
+    EXPECT_EQ(etag.rfind("\"", 0), 0u) << etag;
+    EXPECT_NE(etag.find("-edge-1\""), std::string::npos) << etag;
+    auto get = edge.client().Get("/key/k", {{"If-None-Match", etag}});
+    ASSERT_TRUE(get);
+    EXPECT_EQ(get->status, 304);
 }

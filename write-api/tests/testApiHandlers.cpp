@@ -251,3 +251,36 @@ TEST(WriteApiAdminTest, MalformedOutageRequestIsRejected)
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 400);
 }
+
+// ── Conditional reads (ETag / If-None-Match) ────────────────────────────
+
+TEST(WriteApiConditionalTest, IfNoneMatchForTheStoredWriteIs304WithoutABody)
+{
+    WriteApiFixture api(true);
+    api.store.put("k", "v", 7, "edge-3");
+    auto res = api.client().Get("/key/k", {{"If-None-Match", "\"7-edge-3\""}});
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 304);
+    EXPECT_TRUE(res->body.empty());
+    EXPECT_EQ(res->get_header_value("ETag"), "\"7-edge-3\"");
+}
+
+TEST(WriteApiConditionalTest, OtherIfNoneMatchReturnsTheValueAndItsEtag)
+{
+    WriteApiFixture api(true);
+    api.store.put("k", "v", 7, "edge-3");
+    auto res = api.client().Get("/key/k", {{"If-None-Match", "\"6-edge-3\""}});
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_EQ(res->get_header_value("ETag"), "\"7-edge-3\"");
+    EXPECT_EQ(json::parse(res->body)["value"], "v");
+}
+
+TEST(WriteApiValidationTest, WriterIdMustBeSafeInsideAnEtag)
+{
+    WriteApiFixture api(true);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", 1}, {"writerId", "bad\"id"}})), 400);
+    EXPECT_EQ(api.put("k", json({{"value", "v"}, {"version", 1}, {"writerId", "edge 1"}})), 400);
+    json valid = {{"value", "v"}, {"version", 1}, {"writerId", "edge-1.a_b"}};
+    EXPECT_EQ(api.put("k", valid), 200);
+}

@@ -38,7 +38,8 @@ public:
     /// @brief Fetch a key from the origin via write-api.
     /// @return httpStatus 200 with the JSON body, 404 when absent, another status on an origin
     ///         error, or 0 with errorMessage when write-api could not be reached.
-    OriginResponse get(const std::string& key);
+    /// @param ifNoneMatch Sent as If-None-Match; write-api answers 304 when it still matches.
+    OriginResponse get(const std::string& key, const std::string& ifNoneMatch = "");
 
     /// @brief Store a versioned key-value pair at the origin via write-api.
     /// @param key      The key.

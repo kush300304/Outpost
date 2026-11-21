@@ -23,7 +23,7 @@ StorageClient::StorageClient(const std::string& host, int port) : host_(host), p
     spdlog::info("StorageClient configured: {}:{}", host_, port_);
 }
 
-StorageResponse StorageClient::get(const std::string& key)
+StorageResponse StorageClient::get(const std::string& key, const std::string& ifNoneMatch)
 {
     httplib::Client cli(host_, port_);
     cli.set_address_family(AF_INET);
@@ -32,7 +32,12 @@ StorageResponse StorageClient::get(const std::string& key)
     cli.set_read_timeout(5);
 
     StorageResponse response;
-    auto res = cli.Get("/key/" + common::encodePathSegment(key));
+    httplib::Headers headers;
+    if (!ifNoneMatch.empty())
+    {
+        headers.emplace("If-None-Match", ifNoneMatch);
+    }
+    auto res = cli.Get("/key/" + common::encodePathSegment(key), headers);
     if (!res)
     {
         response.errorMessage =
@@ -43,7 +48,8 @@ StorageResponse StorageClient::get(const std::string& key)
     {
         response.httpStatus = res->status;
         response.body = res->body;
-        response.success = res->status == 200;
+        response.success = res->status == 200 || res->status == 304;
+        response.etag = res->get_header_value("ETag");
     }
     return response;
 }

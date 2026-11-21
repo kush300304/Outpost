@@ -66,6 +66,8 @@ public:
                 lastKey = req.matches[1].str();
                 lastBody = req.body;
                 lastForwardedFor = req.get_header_value("X-Forwarded-For");
+                lastIfNoneMatch = req.get_header_value("If-None-Match");
+                lastCacheControl = req.get_header_value("Cache-Control");
             }
             ++requests;
             res.status = replyStatus.load();
@@ -73,11 +75,29 @@ public:
             res.set_header("X-Cache", "HIT");
             res.set_header("X-Write-Mode", "DIRECT");
             res.set_header("Retry-After", "1");
-            res.set_content(json({{"key", req.matches[1].str()}, {"servedBy", id_}}).dump(),
-                            "application/json");
+            res.set_header("ETag", "\"7-" + id_ + "\"");
+            res.set_header("Last-Modified", "Tue, 14 Nov 2023 22:13:20 GMT");
+            res.set_header("Age", "3");
+            res.set_header("Cache-Control", "max-age=57, stale-if-error=3600");
+            if (res.status != 304)
+            {
+                res.set_content(json({{"key", req.matches[1].str()}, {"servedBy", id_}}).dump(),
+                                "application/json");
+            }
         };
         server_->Get(R"(/key/(.+))", handler);
         server_->Put(R"(/key/(.+))", handler);
+        server_->Post(
+            R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    lastPurged = req.matches[1].str();
+                }
+                ++purges;
+                res.set_content(
+                    json({{"key", req.matches[1].str()}, {"purged", true}, {"nodeId", id_}}).dump(),
+                    "application/json");
+            });
         port_ = port == 0 ? server_->bind_to_any_port("127.0.0.1")
                           : (server_->bind_to_port("127.0.0.1", port) ? port : -1);
         thread_ = std::thread([this] { server_->listen_after_bind(); });
@@ -115,7 +135,15 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return lastBody;
     }
+    std::string lastSeen(const std::string& header) const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return header == "If-None-Match"   ? lastIfNoneMatch
+               : header == "Cache-Control" ? lastCacheControl
+                                           : lastPurged;
+    }
     std::atomic<int> requests{0};
+    std::atomic<int> purges{0};
     std::atomic<int> replyStatus{200};
 
 private:
@@ -127,6 +155,9 @@ private:
     std::string lastKey;
     std::string lastBody;
     std::string lastForwardedFor;
+    std::string lastIfNoneMatch;
+    std::string lastCacheControl;
+    std::string lastPurged;
 };
 
 /// A RouterServer in front of three fake edges, serving on an ephemeral port.
@@ -306,4 +337,70 @@ TEST_F(RouterFixture, NoHealthyEdgeIs503)
     auto res = client().Get("/key/k");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 503);
+}
+
+TEST_F(RouterFixture, ConditionalRequestHeadersAndCacheHeadersPassThrough)
+{
+    auto res =
+        client().Get("/key/k", {{"If-None-Match", "\"6-edge-1\""}, {"Cache-Control", "no-cache"}});
+    ASSERT_TRUE(res);
+    std::string owner = res->get_header_value("X-Node");
+    const FakeEdge* edge = nullptr;
+    for (const auto& candidate : edges_)
+    {
+        edge = candidate->node().id == owner ? candidate.get() : edge;
+    }
+    ASSERT_NE(edge, nullptr);
+    EXPECT_EQ(edge->lastSeen("If-None-Match"), "\"6-edge-1\"");
+    EXPECT_EQ(edge->lastSeen("Cache-Control"), "no-cache");
+    EXPECT_EQ(res->get_header_value("ETag"), "\"7-" + owner + "\"");
+    EXPECT_EQ(res->get_header_value("Last-Modified"), "Tue, 14 Nov 2023 22:13:20 GMT");
+    EXPECT_EQ(res->get_header_value("Age"), "3");
+    EXPECT_EQ(res->get_header_value("Cache-Control"), "max-age=57, stale-if-error=3600");
+}
+
+TEST_F(RouterFixture, NotModifiedPassesThroughWithoutABody)
+{
+    for (const auto& edge : edges_)
+    {
+        edge->replyStatus = 304;
+    }
+    auto res = client().Get("/key/k", {{"If-None-Match", "\"7-edge-1\""}});
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 304);
+    EXPECT_TRUE(res->body.empty());
+    EXPECT_FALSE(res->get_header_value("ETag").empty());
+}
+
+TEST_F(RouterFixture, PurgeFansOutToEveryEdge)
+{
+    auto res = client().Post("/purge/key/a%2Fb", "", "text/plain");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    json body = json::parse(res->body);
+    EXPECT_EQ(body["key"], "a/b");
+    EXPECT_EQ(body["complete"], true);
+    ASSERT_EQ(body["edges"].size(), 3u);
+    for (const auto& edge : edges_)
+    {
+        EXPECT_EQ(edge->purges.load(), 1);
+        EXPECT_EQ(edge->lastSeen("purged"), "a/b");
+    }
+}
+
+TEST_F(RouterFixture, PurgeReportsAnEdgeItCouldNotReach)
+{
+    edges_[1]->stop();
+    auto res = client().Post("/purge/key/k", "", "text/plain");
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 502);
+    json body = json::parse(res->body);
+    EXPECT_EQ(body["complete"], false);
+    int reached = 0;
+    for (const json& edge : body["edges"])
+    {
+        reached += edge["reached"].get<bool>() ? 1 : 0;
+        EXPECT_EQ(edge["reached"].get<bool>(), edge["nodeId"] != "edge-2") << edge.dump();
+    }
+    EXPECT_EQ(reached, 2);
 }

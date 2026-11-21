@@ -234,3 +234,37 @@ TEST(KvStoreTest, ConcurrentWritersConvergeOnHighestVersion)
     EXPECT_EQ(stored->version, static_cast<uint64_t>(kVersions));
     EXPECT_EQ(stored->writerId, "w" + std::to_string(kWriters - 1));
 }
+
+TEST_F(KvStoreDurableTest, ConcurrentDurablePutsShareFsyncsAndConverge)
+{
+    constexpr int kThreads = 8;
+    constexpr int kPutsPerThread = 50;
+    {
+        KvStore store(path_, true);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < kThreads; ++t)
+        {
+            threads.emplace_back([&store, t]() {
+                for (int i = 1; i <= kPutsPerThread; ++i)
+                {
+                    store.put("key-" + std::to_string(i % 10), "v" + std::to_string(i),
+                              static_cast<uint64_t>(i), "w" + std::to_string(t));
+                }
+            });
+        }
+        for (auto& thread : threads)
+        {
+            thread.join();
+        }
+        auto stats = store.walStats();
+        EXPECT_LT(stats.fsyncs, stats.appends) << "durable puts did not share fsyncs";
+        auto stored = store.get("key-0");
+        ASSERT_TRUE(stored.has_value());
+        EXPECT_EQ(stored->version, 50u);
+        EXPECT_EQ(stored->writerId, "w" + std::to_string(kThreads - 1));
+    }
+    KvStore reopened(path_, true);
+    EXPECT_EQ(reopened.size(), 10u);
+    EXPECT_EQ(reopened.get("key-0")->version, 50u);
+    EXPECT_EQ(reopened.get("key-0")->writerId, "w" + std::to_string(kThreads - 1));
+}

@@ -21,6 +21,7 @@ struct StorageResponse
     std::string body;
     bool success = false;
     std::string errorMessage;
+    std::string etag;  ///< ETag header of a 200 or 304 answer.
 };
 
 /// @brief HTTP client wrapper for communicating with the Outpost storage service.
@@ -38,7 +39,8 @@ public:
     /// @param key The key to look up.
     /// @return httpStatus 200 with the storage body, 404 when absent, another status on a storage
     ///         error, or 0 with errorMessage when storage could not be reached.
-    StorageResponse get(const std::string& key);
+    /// @param ifNoneMatch Forwarded as If-None-Match; storage answers 304 when it matches.
+    StorageResponse get(const std::string& key, const std::string& ifNoneMatch = "");
 
     /// @brief Store a versioned key-value pair in the storage service.
     /// @param key      The key.

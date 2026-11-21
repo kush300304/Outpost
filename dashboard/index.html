@@ -1,95 +1,243 @@
 <!doctype html>
 <!-- @file index.html
-     Outpost dashboard: live view of the cluster and controls for the demo sequence.
-     Served by nginx on port 8090, which proxies /router, /edge1..3 and /origin-admin. -->
+     Outpost dashboard: a live picture of the cluster, a guided demo of the failure story, and tools
+     to send requests. Served by nginx on port 8090, which proxies /router, /edge1..3, /origin-admin
+     and /storage/debug/stats, so the page needs no CORS. Scripts are ES modules in src/ (no build). -->
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
     <title>Outpost dashboard</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%230f766e'/%3E%3Ccircle cx='8' cy='8' r='3' fill='white'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="styles.css">
+    <script type="module" src="src/main.js"></script>
 </head>
 <body>
-<header class="top">
-    <h1>Outpost</h1>
-    <p class="muted" id="pollStatus" aria-live="polite">Connecting…</p>
+<header class="topBar">
+    <div class="brand">
+        <h1>Outpost</h1>
+        <p class="tagline">Edge cache that keeps serving when the origin fails</p>
+    </div>
+    <div class="topActions">
+        <p class="liveStatus" id="liveStatus" data-state="unknown" aria-live="polite">Connecting…</p>
+        <button type="button" class="ghost" id="themeToggle" aria-label="Colour theme: automatic">Theme: auto</button>
+    </div>
 </header>
 
 <main>
-    <section aria-labelledby="topologyTitle">
-        <h2 id="topologyTitle">Cluster topology</h2>
-        <ol class="topology" id="topology">
-            <li class="node" data-node="router"><span class="nodeName">router</span>
-                <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
-            <li class="arrow" aria-hidden="true">→</li>
-            <li class="nodeGroup">
-                <ol class="edges">
-                    <li class="node" data-node="edge-1"><span class="nodeName">edge-1</span>
-                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
-                    <li class="node" data-node="edge-2"><span class="nodeName">edge-2</span>
-                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
-                    <li class="node" data-node="edge-3"><span class="nodeName">edge-3</span>
-                        <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+    <!-- 1. The request path, live. -->
+    <section class="card flowCard" aria-labelledby="flowTitle">
+        <div class="sectionHead">
+            <h2 id="flowTitle">How a request flows</h2>
+            <p class="hint">Colours and labels are live. Send a request below and its path lights up.</p>
+        </div>
+        <ol class="flow" id="flow">
+            <li class="flowNode" data-node="client">
+                <span class="nodeTitle">Client</span>
+                <span class="nodeSub">this browser</span>
+            </li>
+            <li class="hop" data-hop="toRouter" aria-hidden="true"></li>
+            <li class="flowNode" data-node="router">
+                <span class="nodeTitle">Router <span class="pill" data-state="unknown">unknown</span></span>
+                <span class="nodeSub">picks the edge by hashing the key</span>
+            </li>
+            <li class="hop" data-hop="toEdge" aria-hidden="true"></li>
+            <li class="flowEdges">
+                <ol>
+                    <li class="flowNode" data-node="edge-1">
+                        <span class="nodeTitle">edge-1 <span class="pill" data-state="unknown">unknown</span></span>
+                        <span class="nodeSub">–</span>
+                        <span class="resultChip" hidden></span>
+                    </li>
+                    <li class="flowNode" data-node="edge-2">
+                        <span class="nodeTitle">edge-2 <span class="pill" data-state="unknown">unknown</span></span>
+                        <span class="nodeSub">–</span>
+                        <span class="resultChip" hidden></span>
+                    </li>
+                    <li class="flowNode" data-node="edge-3">
+                        <span class="nodeTitle">edge-3 <span class="pill" data-state="unknown">unknown</span></span>
+                        <span class="nodeSub">–</span>
+                        <span class="resultChip" hidden></span>
+                    </li>
                 </ol>
             </li>
-            <li class="arrow" aria-hidden="true">→</li>
-            <li class="node" data-node="origin"><span class="nodeName">origin (write-api + storage)</span>
-                <span class="pill" data-state="unknown">unknown</span><span class="detail muted"></span></li>
+            <li class="hop" data-hop="toOrigin" aria-hidden="true"></li>
+            <li class="flowNode" data-node="write-api">
+                <span class="nodeTitle">write-api <span class="pill" data-state="unknown">unknown</span></span>
+                <span class="nodeSub">validates and forwards</span>
+            </li>
+            <li class="hop" data-hop="toStorage" aria-hidden="true"></li>
+            <li class="flowNode" data-node="storage">
+                <span class="nodeTitle">storage <span class="pill" data-state="unknown">unknown</span></span>
+                <span class="nodeSub">–</span>
+            </li>
         </ol>
+        <p class="flowCaption" id="flowCaption" aria-live="polite">No request sent yet.</p>
     </section>
 
-    <section aria-labelledby="edgesTitle">
-        <h2 id="edgesTitle">Edges</h2>
-        <div class="grid" id="edgePanels"></div>
-    </section>
-
-    <section class="grid controls" aria-label="Controls">
-        <form class="card" id="requestForm">
-            <h2>Request tester</h2>
-            <p class="muted">Sent through <code>/router</code>, like any client.</p>
-            <label>Key <input id="reqKey" name="key" required value="demo" autocomplete="off"></label>
-            <label>Method
-                <select id="reqMethod" name="method">
-                    <option>GET</option>
-                    <option>PUT</option>
-                </select>
-            </label>
-            <label>Value <input id="reqValue" name="value" value="hello" autocomplete="off"></label>
-            <button type="submit">Send</button>
-            <dl class="result" id="reqResult" aria-live="polite"></dl>
-            <pre class="body" id="reqBody" aria-live="polite"></pre>
-        </form>
-
-        <div class="card">
-            <h2>Simulated origin outage</h2>
-            <p class="muted">Tells write-api to answer 503 on /health and every /key request. No container
-                is stopped: this is <strong>simulated</strong>.</p>
-            <button type="button" id="outageToggle" aria-pressed="false">Start simulated outage</button>
-            <p id="outageStatus" aria-live="polite">Status unknown</p>
+    <!-- 2. Guided demo of the failure story. -->
+    <section class="card" aria-labelledby="demoTitle">
+        <div class="sectionHead">
+            <h2 id="demoTitle">Guided demo</h2>
+            <p class="hint">Nine steps, from a normal read to an origin outage and recovery. Each step checks
+                that the cluster really did what it says.</p>
         </div>
-
-        <form class="card" id="loadForm">
-            <h2>Mini load generator</h2>
-            <p class="muted">GETs keys <code>load-0</code> … <code>load-(K-1)</code> through the router.</p>
-            <label>Requests (N) <input id="loadCount" type="number" min="1" max="5000" value="300"></label>
-            <label>Concurrency (C) <input id="loadConcurrency" type="number" min="1" max="32" value="6"></label>
-            <label>Key range (K) <input id="loadRange" type="number" min="1" max="10000" value="50"></label>
-            <button type="submit" id="loadStart">Run</button>
-            <p class="muted" id="loadProgress" aria-live="polite"></p>
-            <dl class="result" id="loadResult"></dl>
-            <p class="muted small">Latencies are browser-measured, not a benchmark (browsers also cap
-                parallel connections per host).</p>
-        </form>
+        <div class="demoActions">
+            <button type="button" id="demoRunAll">Run all steps</button>
+            <button type="button" class="ghost" id="demoReset">Start over with a new key</button>
+            <span class="hint" id="demoKey"></span>
+        </div>
+        <ol class="demoSteps" id="demoSteps"></ol>
     </section>
 
-    <section aria-labelledby="eventsTitle">
-        <h2 id="eventsTitle">Event log <span class="muted small">(latest 100, all edges)</span></h2>
+    <!-- 3. Inside each edge. -->
+    <section aria-labelledby="edgesTitle">
+        <div class="sectionHead">
+            <h2 id="edgesTitle">Inside each edge</h2>
+            <p class="hint">Counters since each edge started. Hover a label for what it means.</p>
+        </div>
+        <div class="grid three" id="edgePanels"></div>
+    </section>
+
+    <!-- 4. Router and origin. -->
+    <section class="grid two" aria-label="Router and origin">
+        <article class="card" aria-labelledby="routerTitle">
+            <header class="panelHead">
+                <h3 id="routerTitle">Router</h3>
+                <span class="pill" id="routerPill" data-state="unknown">unknown</span>
+            </header>
+            <dl class="metrics" id="routerMetrics"></dl>
+            <h4 title="Requests the router sent to each edge. Consistent hashing spreads keys roughly evenly.">
+                Requests routed to each edge</h4>
+            <div class="bars" id="routerBars"></div>
+        </article>
+        <article class="card" aria-labelledby="originTitle">
+            <header class="panelHead">
+                <h3 id="originTitle">Origin: write-api + storage</h3>
+                <span class="pill" id="originPill" data-state="unknown">unknown</span>
+            </header>
+            <dl class="metrics" id="originMetrics"></dl>
+        </article>
+    </section>
+
+    <!-- 5. Tools. -->
+    <section class="grid toolsGrid" aria-label="Tools">
+        <form class="card" id="requestForm">
+            <h2>Send a request</h2>
+            <p class="hint">Goes through the router, like any client.</p>
+            <div class="fieldRow">
+                <label class="field">Key <input id="reqKey" name="key" required value="demo" autocomplete="off" spellcheck="false"></label>
+                <fieldset class="segmented">
+                    <legend>Action</legend>
+                    <label><input type="radio" name="method" value="GET" checked> GET</label>
+                    <label><input type="radio" name="method" value="PUT"> PUT</label>
+                    <label><input type="radio" name="method" value="PURGE"> Purge</label>
+                </fieldset>
+            </div>
+            <label class="field" id="reqValueField">Value <input id="reqValue" name="value" value="hello" autocomplete="off"></label>
+            <div class="checks">
+                <label title="Send the ETag from the last response for this key. A match is answered 304 Not Modified.">
+                    <input type="checkbox" id="reqConditional"> If-None-Match (last ETag)</label>
+                <label title="Ask the edge to confirm its copy with the origin even if it is fresh.">
+                    <input type="checkbox" id="reqNoCache"> Cache-Control: no-cache</label>
+            </div>
+            <button type="submit">Send</button>
+            <div class="response" id="reqResponse" hidden>
+                <div class="responseHead" id="reqSummary" aria-live="polite"></div>
+                <dl class="headerList" id="reqHeaders"></dl>
+                <pre class="body" id="reqBody"></pre>
+            </div>
+        </form>
+
+        <div class="stack">
+            <div class="card">
+                <h2>Simulated origin outage</h2>
+                <p class="hint">Tells write-api to answer 503 on <code>/health</code> and every <code>/key</code>
+                    request. No container is stopped.</p>
+                <button type="button" class="switch" id="outageToggle" aria-pressed="false" disabled>
+                    <span class="switchTrack" aria-hidden="true"><span class="switchThumb"></span></span>
+                    <span class="switchLabel">Simulated outage: off</span>
+                </button>
+                <p class="hint" id="outageStatus" aria-live="polite">Status unknown</p>
+            </div>
+
+            <form class="card" id="loadForm">
+                <h2>Mini load generator</h2>
+                <p class="hint">GETs random keys <code>load-0</code> … <code>load-(K-1)</code> through the router.</p>
+                <div class="fieldRow three">
+                    <label class="field">Requests <input id="loadCount" type="number" min="1" max="5000" value="300"></label>
+                    <label class="field">Parallel <input id="loadConcurrency" type="number" min="1" max="32" value="6"></label>
+                    <label class="field">Keys <input id="loadRange" type="number" min="1" max="10000" value="50"></label>
+                </div>
+                <div class="checks">
+                    <label title="Without this, keys nobody wrote are read: each read is a 404 MISS and nothing is cached.">
+                        <input type="checkbox" id="loadSeed" checked> Write the K keys first (once per page load)</label>
+                </div>
+                <button type="submit" id="loadStart">Run</button>
+                <p class="hint" id="loadProgress" aria-live="polite"></p>
+                <div class="loadResult" id="loadResult" hidden>
+                    <div class="mixBar" id="loadMix" role="img"></div>
+                    <dl class="metrics compact" id="loadNumbers"></dl>
+                </div>
+                <p class="hint small">Browser-measured, not a benchmark: browsers also cap parallel connections
+                    per host.</p>
+            </form>
+        </div>
+    </section>
+
+    <!-- 6. Event log. -->
+    <section class="card" aria-labelledby="eventsTitle">
+        <div class="sectionHead">
+            <h2 id="eventsTitle">Event log</h2>
+            <p class="hint">Latest 100 events from all edges, newest first.</p>
+        </div>
+        <div class="filters" id="eventFilters" role="group" aria-label="Filter events by type">
+            <button type="button" class="chip" data-type="all" aria-pressed="true">All</button>
+            <button type="button" class="chip" data-type="breaker" aria-pressed="false">Breaker</button>
+            <button type="button" class="chip" data-type="reconcile" aria-pressed="false">Reconcile</button>
+            <button type="button" class="chip" data-type="rateLimit" aria-pressed="false">Rate limit</button>
+            <button type="button" class="chip" data-type="purge" aria-pressed="false">Purge</button>
+        </div>
         <div class="tableWrap">
             <table>
                 <thead><tr><th scope="col">Time</th><th scope="col">Edge</th><th scope="col">Type</th><th scope="col">Event</th></tr></thead>
                 <tbody id="events"></tbody>
             </table>
         </div>
+    </section>
+
+    <!-- 7. Glossary. -->
+    <section class="card">
+        <details class="glossary">
+            <summary>What the words mean</summary>
+            <dl>
+                <dt><span class="cacheTag" data-cache="HIT">HIT</span></dt>
+                <dd>The edge answered from its memory, within the entry's time to live (ttl).</dd>
+                <dt><span class="cacheTag" data-cache="MISS">MISS</span></dt>
+                <dd>The edge had no copy and fetched the value from the origin (write-api → storage).</dd>
+                <dt><span class="cacheTag" data-cache="REVALIDATED">REVALIDATED</span></dt>
+                <dd>The edge asked the origin "is my copy still current?" with its ETag; the origin said yes
+                    (304), so the value was not sent again.</dd>
+                <dt><span class="cacheTag" data-cache="NOT_MODIFIED">304</span></dt>
+                <dd>Not Modified: the client already had this exact version (its If-None-Match matched the ETag), so no body was sent.</dd>
+                <dt><span class="cacheTag" data-cache="STALE">STALE</span></dt>
+                <dd>The origin is unreachable, so the edge served its older copy instead of failing, for at
+                    most ttl + stale-if-error.</dd>
+                <dt><span class="cacheTag" data-cache="QUEUED">QUEUED</span></dt>
+                <dd>The origin is unreachable, so the edge saved the write in its local write-ahead log (202)
+                    and delivers it, in order, once the origin is back.</dd>
+                <dt>Circuit breaker</dt>
+                <dd>CLOSED: the origin is healthy. OPEN: after 3 failures the edge stops calling it.
+                    HALF_OPEN: after a pause, one probe tests whether it is back.</dd>
+                <dt>ETag</dt>
+                <dd>The identity of the write that produced a value (<code>"version-writerId"</code>), used to ask
+                    "has this changed?".</dd>
+                <dt>Writes per fsync</dt>
+                <dd>Storage makes every write durable before acknowledging it; writes that arrive together share one
+                    disk flush (group commit).</dd>
+            </dl>
+        </details>
     </section>
 </main>
 
@@ -99,21 +247,27 @@
             <h3 class="edgeName"></h3>
             <span class="pill" data-state="unknown">unknown</span>
         </header>
+        <div class="heroMetric">
+            <div>
+                <span class="heroValue hitRate">–</span>
+                <span class="heroLabel" title="Share of reads answered from a fresh cached copy.">cache hit rate</span>
+            </div>
+            <svg class="spark hitSpark" viewBox="0 0 120 32" aria-hidden="true"><path/></svg>
+        </div>
         <dl class="metrics">
-            <div><dt>Hit rate</dt><dd><span class="hitRate">–</span>
-                <svg class="spark hitSpark" viewBox="0 0 120 24" aria-hidden="true"><path/></svg></dd></div>
-            <div><dt>Entries / capacity</dt><dd class="entries">–</dd></div>
-            <div><dt>Breaker</dt><dd class="breaker">–</dd></div>
-            <div><dt>Your tokens left</dt><dd class="tokens">–</dd></div>
-            <div><dt>Queued writes</dt><dd><span class="pending">–</span>
-                <svg class="spark queueSpark" viewBox="0 0 120 24" aria-hidden="true"><path/></svg></dd></div>
-            <div><dt>Stale serves / 429s</dt><dd class="staleAnd429">–</dd></div>
+            <div><dt title="Entries cached now / the most the LRU cache holds.">Cached keys</dt><dd class="entries">–</dd></div>
+            <div><dt title="CLOSED = origin healthy; OPEN = origin failing, edge serves stale and queues writes.">Breaker</dt><dd class="breaker">–</dd></div>
+            <div><dt title="Writes accepted while the origin was down, waiting to be delivered.">Queued writes</dt>
+                <dd><span class="pending">–</span><svg class="spark queueSpark" viewBox="0 0 120 32" aria-hidden="true"><path/></svg></dd></div>
+            <div><dt title="Reads served from an older copy because the origin was unreachable.">Stale serves</dt><dd class="stale">–</dd></div>
+            <div><dt title="Origin confirmed the cached copy (304) / clients told 304 Not Modified.">Revalidated / 304</dt><dd class="validators">–</dd></div>
+            <div><dt title="Purge requests handled by this edge.">Purges</dt><dd class="purges">–</dd></div>
+            <div><dt title="Requests left in your browser's token bucket on this edge / its burst size.">Your rate-limit tokens</dt><dd class="tokens">–</dd></div>
+            <div><dt title="Requests this edge refused with 429 Too Many Requests.">Rate-limited</dt><dd class="limited">–</dd></div>
         </dl>
-        <h4>Recent breaker transitions</h4>
+        <h4>Recent breaker changes</h4>
         <ol class="transitions"></ol>
     </article>
 </template>
-
-<script src="app.js"></script>
 </body>
 </html>

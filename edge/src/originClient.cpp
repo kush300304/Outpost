@@ -24,7 +24,7 @@ OriginClient::OriginClient(const std::string& host, int port, std::chrono::milli
     spdlog::info("OriginClient configured: {}:{}", host_, port_);
 }
 
-OriginResponse OriginClient::get(const std::string& key)
+OriginResponse OriginClient::get(const std::string& key, const std::string& ifNoneMatch)
 {
     ++totalRequests_;
     httplib::Client cli(host_, port_);
@@ -34,7 +34,12 @@ OriginResponse OriginClient::get(const std::string& key)
     cli.set_read_timeout(timeout_);
 
     OriginResponse response;
-    auto res = cli.Get("/key/" + common::encodePathSegment(key));
+    httplib::Headers headers;
+    if (!ifNoneMatch.empty())
+    {
+        headers.emplace("If-None-Match", ifNoneMatch);
+    }
+    auto res = cli.Get("/key/" + common::encodePathSegment(key), headers);
     if (!res)
     {
         ++failedRequests_;

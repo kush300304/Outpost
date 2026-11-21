@@ -249,3 +249,17 @@ TEST(LruCacheTest, ExpiredLookupCountsAsMiss)
     EXPECT_EQ(cache.stats().misses, 1u);
     EXPECT_EQ(cache.stats().hits, 0u);
 }
+
+TEST(LruCacheTest, LookupReportsVersionTagAndAge)
+{
+    LruCache cache(10, std::chrono::milliseconds(1000));
+    cache.put("k", "v", 7, "tag-7");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    auto entry = cache.lookup("k");
+    ASSERT_TRUE(entry.has_value());
+    EXPECT_EQ(entry->value, "v");
+    EXPECT_EQ(entry->version, 7u);
+    EXPECT_EQ(entry->tag, "tag-7");
+    EXPECT_GE(entry->age, std::chrono::milliseconds(30));
+    EXPECT_TRUE(entry->fresh);
+}

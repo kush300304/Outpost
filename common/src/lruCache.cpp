@@ -27,8 +27,10 @@ std::optional<LruCache::Lookup> LruCache::lookup(const Key& key)
     if (it != index_.end())
     {
         order_.splice(order_.begin(), order_, it->second);
-        bool fresh = ttl_.count() == 0 || Clock::now() - it->second->storedAt < ttl_;
-        result = Lookup{it->second->value, fresh};
+        auto age = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
+                                                                         it->second->storedAt);
+        bool fresh = ttl_.count() == 0 || age < ttl_;
+        result = Lookup{it->second->value, fresh, it->second->version, it->second->tag, age};
     }
     if (result && result->fresh)
     {
@@ -52,7 +54,7 @@ std::optional<LruCache::Value> LruCache::get(const Key& key)
     return value;
 }
 
-bool LruCache::put(const Key& key, const Value& value, uint64_t version)
+bool LruCache::put(const Key& key, const Value& value, uint64_t version, const std::string& tag)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     ++stats_.puts;
@@ -62,6 +64,7 @@ bool LruCache::put(const Key& key, const Value& value, uint64_t version)
     {
         it->second->value = value;
         it->second->version = version;
+        it->second->tag = tag;
         it->second->storedAt = Clock::now();
         order_.splice(order_.begin(), order_, it->second);
     }
@@ -73,7 +76,7 @@ bool LruCache::put(const Key& key, const Value& value, uint64_t version)
             order_.pop_back();
             ++stats_.evictions;
         }
-        order_.push_front(Entry{key, value, version, Clock::now()});
+        order_.push_front(Entry{key, value, version, tag, Clock::now()});
         index_[key] = order_.begin();
     }
     return stored;

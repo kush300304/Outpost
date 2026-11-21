@@ -5,8 +5,9 @@
 ///
 /// HTTP endpoints:
 ///   GET  /health          → 200 health check
-///   GET  /key/:id         → cache-aside read
+///   GET  /key/:id         → cache-aside read with standard HTTP caching headers
 ///   PUT  /key/:id         → versioned write, forwarded to write-api or queued in the edge WAL
+///   POST /purge/key/:id   → evict the key from this edge's cache
 ///   GET  /debug/stats     → statistics and recent events; schema in docs/statsApi.md
 ///
 /// Failure detection: a common::CircuitBreaker guards write-api. A background maintenance thread
@@ -14,10 +15,16 @@
 /// CLOSED, never while OPEN, and exactly once (the probe) in HALF_OPEN. Request handlers never
 /// call isAllowed(); they read the state and record origin successes and failures.
 ///
-/// Reads: a fresh cached key is served as HIT while CLOSED. A missing or expired key is fetched
-/// from write-api while CLOSED (MISS) and cached with its version. Whenever the breaker is not
-/// CLOSED, or that fetch fails, any cached value (fresh or expired) is served as STALE; with
-/// nothing cached the edge answers 503.
+/// Reads: a fresh cached key is served as HIT while CLOSED. A missing key is fetched from
+/// write-api while CLOSED (MISS) and cached with its version and ETag. An expired key, or any key
+/// when the request says Cache-Control: no-cache or max-age=0, is revalidated with If-None-Match;
+/// a 304 from the origin keeps the cached value and restarts its ttl (REVALIDATED). Whenever the
+/// breaker is not CLOSED, or the origin fails, a copy no older than ttl + staleIfError is served as
+/// STALE; otherwise the edge answers 503.
+///
+/// HTTP caching: every response carrying a value has ETag "<version>-<writerId>", Last-Modified
+/// (the version's wall-clock second), Age, and Cache-Control: max-age=<remaining ttl>,
+/// stale-if-error=<staleIfError>. A request whose If-None-Match matches gets 304 without a body.
 ///
 /// Rate limiting: every /key request consumes a token from its client's bucket (client = first
 /// X-Forwarded-For hop, else the peer address); an empty bucket answers 429 with Retry-After: 1.
@@ -62,6 +69,7 @@ struct EdgeConfig
     int writeApiPort = 9090;                              ///< Write-API port.
     std::size_t cacheCapacity = 1024;                     ///< LRU cache max entries.
     std::chrono::milliseconds cacheTtl{60000};            ///< Entry freshness; 0 = forever.
+    std::chrono::milliseconds staleIfError{3600000};      ///< Stale window after the ttl.
     double rateLimitPerSec = 100.0;                       ///< Token refill per client per s.
     std::size_t rateLimitBurst = 200;                     ///< Token bucket capacity per client.
     std::size_t maxTrackedClients = 10000;                ///< Buckets kept before idle eviction.
@@ -160,6 +168,9 @@ private:
     std::atomic<uint64_t> totalReads_{0};
     std::atomic<uint64_t> totalWrites_{0};
     std::atomic<uint64_t> staleServes_{0};
+    std::atomic<uint64_t> revalidated_{0};
+    std::atomic<uint64_t> notModified_{0};
+    std::atomic<uint64_t> purges_{0};
     std::atomic<uint64_t> queuedWrites_{0};
     std::atomic<uint64_t> reconciledWrites_{0};
     std::atomic<uint64_t> rejectedWrites_{0};
