@@ -12,13 +12,22 @@ export const EDGES = [
 
 const lastEtags = new Map();
 
-/** Fetches url and parses JSON with a timeout; resolves to {ok, status, data, headers}, never rejects. */
+/**
+ * Fetches url and parses JSON with a timeout; resolves to {ok, status, data, headers}, never rejects.
+ *
+ * cache: 'no-store' keeps the browser's own HTTP cache out of the way, so every request reaches the
+ * cluster. For such requests the Fetch standard adds "Cache-Control: no-cache" unless the request
+ * already has a Cache-Control header, and the edges honour no-cache by revalidating with the origin.
+ * Requests therefore carry the neutral "no-transform" directive by default; a caller that wants a
+ * revalidation sets Cache-Control: no-cache itself.
+ */
 export async function fetchJson(url, options = {}, timeoutMs = 900) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const headers = { 'Cache-Control': 'no-transform', ...(options.headers || {}) };
     let result = { ok: false, status: 0, data: null, headers: null };
     try {
-        const response = await fetch(url, { ...options, signal: controller.signal, cache: 'no-store' });
+        const response = await fetch(url, { ...options, headers, signal: controller.signal, cache: 'no-store' });
         const text = await response.text();
         let data = null;
         try {
