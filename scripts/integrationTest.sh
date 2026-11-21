@@ -59,7 +59,28 @@ curl -s -o /dev/null -X PUT --data-binary tricky "$ROUTER/key/$encoded"
 stored=$(storageGet "$encoded" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("key",""), d.get("value",""))')
 check "key '$run?a b/c%#+' stored exactly ($stored)" "$([[ "$stored" == "$run?a b/c%#+ tricky" ]] && echo true)"
 
-# 5. Per-client rate limiting under a burst.
+# 5. Standard HTTP caching through the router: validators, 304, revalidation, purge.
+key="$run-http"
+curl -s -o /dev/null -X PUT --data-binary cached "$ROUTER/key/$key"
+hit=$(curl -s -D - -o /dev/null "$ROUTER/key/$key" | tr -d '\r')
+etag=$(echo "$hit" | awk 'tolower($1)=="etag:" {print $2}')
+control=$(echo "$hit" | awk 'tolower($1)=="cache-control:" {$1=""; print substr($0,2)}')
+check "HIT carries ETag, Last-Modified and Age ($etag)" \
+    "$([[ "$etag" == \"*\" && "$hit" == *"Last-Modified:"* && "$hit" == *"Age:"* ]] && echo true)"
+check "Cache-Control has max-age and stale-if-error ($control)" \
+    "$([[ "$control" == max-age=*", stale-if-error="* ]] && echo true)"
+notModified=$(curl -s -o /dev/null -w '%{http_code} %{size_download}' -H "If-None-Match: $etag" "$ROUTER/key/$key")
+check "If-None-Match with the ETag is 304 without a body ($notModified)" "$([[ "$notModified" == "304 0" ]] && echo true)"
+HEADER=X-Cache revalidated=$(header -H 'Cache-Control: no-cache' "$ROUTER/key/$key")
+check "no-cache revalidates with the origin, which answers 304 ($revalidated)" \
+    "$([[ "$revalidated" == REVALIDATED ]] && echo true)"
+purge=$(curl -s -X POST "$ROUTER/purge/key/$key" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["complete"], len(d["edges"]), sum(e["purged"] for e in d["edges"]))')
+check "purge reaches all 3 edges and evicts the key once (complete, edges, evicted: $purge)" \
+    "$([[ "$purge" == "True 3 1" ]] && echo true)"
+HEADER=X-Cache afterPurge=$(header "$ROUTER/key/$key")
+check "read after purge is a MISS ($afterPurge)" "$([[ "$afterPurge" == MISS ]] && echo true)"
+
+# 6. Per-client rate limiting under a burst.
 burst=$(seq 400 | xargs -P 40 -I{} curl -s -D - -o /dev/null -H "X-Forwarded-For: 198.51.100.77" \
     "$ROUTER/key/$run-hot" | tr -d '\r')
 codes=$(echo "$burst" | awk '/^HTTP\//{print $2}' | sort | uniq -c | tr '\n' ' ')
@@ -70,7 +91,7 @@ other=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Forwarded-For: 198.51.100.7
 check "another client is still served ($other)" "$([[ "$other" != 429 ]] && echo true)"
 check "every 429 carries Retry-After: 1 ($retries of $limited)" "$([[ "$retries" == "$limited" ]] && echo true)"
 
-# 6. Only the router is reachable from the host.
+# 7. Only the router is reachable from the host.
 for port in 8081 8082 8083 9090 9091; do
     code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://localhost:$port/health")
     check "port $port is not published (curl got $code)" "$([[ "$code" == 000 ]] && echo true)"
