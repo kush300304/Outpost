@@ -43,6 +43,8 @@ Start the cluster with `docker compose up -d --build --wait`. Use a fresh key, o
 
 ## 3. Dashboard in a browser (http://localhost:8090)
 
+For a guided, explained version of these checks, follow `docs/handsOnTour.md`.
+
 Use a fresh tab (or reload once) after `docker compose up --build`; nginx tells the browser to revalidate the
 page and its scripts, so an older cached version is never mixed with a newer one.
 

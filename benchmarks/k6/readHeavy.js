@@ -2,6 +2,9 @@
 // k6 workload for scripts/runBenchmark.sh: 90 % GET / 10 % PUT over KEYS keys through the router.
 // Each virtual user is its own client (X-Forwarded-For). Latency is recorded per X-Cache result.
 // Environment: BASE_URL, KEYS (1000), VUS (32), DURATION (60s), OUT_DIR (where the summary goes).
+// RATE (requests/s, default unset): instead of VUS clients each sending its next request as soon as
+// the previous one returns (closed loop), start RATE requests per second whatever the latency (open
+// loop, k6 constant-arrival-rate with up to 4 × VUS clients), to compare builds at the same load.
 
 import http from 'k6/http';
 import { Counter, Trend } from 'k6/metrics';
@@ -9,12 +12,27 @@ import { Counter, Trend } from 'k6/metrics';
 const baseUrl = __ENV.BASE_URL || 'http://router:8080';
 const keyCount = parseInt(__ENV.KEYS || '1000', 10);
 
-export const options = {
-    vus: parseInt(__ENV.VUS || '32', 10),
-    duration: __ENV.DURATION || '60s',
+const vus = parseInt(__ENV.VUS || '32', 10);
+const rate = parseInt(__ENV.RATE || '0', 10);
+const common = {
     summaryTrendStats: ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'],
     setupTimeout: '120s',
 };
+// Object.assign rather than object spread: k6 0.49's script compiler does not accept spread syntax.
+export const options = rate > 0
+    ? Object.assign({}, common, {
+        scenarios: {
+            fixedRate: {
+                executor: 'constant-arrival-rate',
+                rate,
+                timeUnit: '1s',
+                duration: __ENV.DURATION || '60s',
+                preAllocatedVUs: vus,
+                maxVUs: vus * 4,
+            },
+        },
+    })
+    : Object.assign({}, common, { vus, duration: __ENV.DURATION || '60s' });
 
 const hitLatency = new Trend('latency_get_hit', true);
 const missLatency = new Trend('latency_get_miss', true);

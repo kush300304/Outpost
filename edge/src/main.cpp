@@ -18,6 +18,7 @@
 ///   RATE_LIMIT_PER_SEC         token refill per client per second (default 100)
 ///   RATE_LIMIT_BURST           token bucket capacity per client (default 200)
 ///   MAX_TRACKED_CLIENTS        client buckets kept before eviction (default 10000)
+///   LOG_LEVEL                  trace, debug, info, warn, error, critical or off (default info)
 
 #include <spdlog/spdlog.h>
 
@@ -31,7 +32,15 @@
 int main()
 {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [edge] %v");
-    spdlog::set_level(spdlog::level::info);
+    const char* levelSetting = std::getenv("LOG_LEVEL");
+    std::string levelName = levelSetting != nullptr ? levelSetting : "info";
+    spdlog::level::level_enum level = spdlog::level::from_str(levelName);
+    bool knownLevel = level != spdlog::level::off || levelName == "off";
+    spdlog::set_level(knownLevel ? level : spdlog::level::info);
+    if (!knownLevel)
+    {
+        spdlog::warn("Unknown LOG_LEVEL '{}'; using info", levelName);
+    }
 
     auto env = [](const char* name, const std::string& fallback) {
         const char* value = std::getenv(name);

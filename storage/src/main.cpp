@@ -5,6 +5,7 @@
 ///   PORT       listen port (default 9091)
 ///   WAL_PATH   write-ahead log file (default /data/storage.wal)
 ///   WAL_FSYNC  "0" disables fsync per applied write (default "1")
+///   LOG_LEVEL  trace, debug, info, warn, error, critical or off (default info)
 
 #include <httplib.h>
 #include <spdlog/spdlog.h>
@@ -19,7 +20,15 @@
 int main()
 {
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [storage] %v");
-    spdlog::set_level(spdlog::level::info);
+    const char* levelSetting = std::getenv("LOG_LEVEL");
+    std::string levelName = levelSetting != nullptr ? levelSetting : "info";
+    spdlog::level::level_enum level = spdlog::level::from_str(levelName);
+    bool knownLevel = level != spdlog::level::off || levelName == "off";
+    spdlog::set_level(knownLevel ? level : spdlog::level::info);
+    if (!knownLevel)
+    {
+        spdlog::warn("Unknown LOG_LEVEL '{}'; using info", levelName);
+    }
 
     const char* envPort = std::getenv("PORT");
     const char* envWalPath = std::getenv("WAL_PATH");
