@@ -1,9 +1,9 @@
 /// @file testHttpCache.cpp
 /// @brief Unit tests for the entity-tag helpers in common/httpCache.h.
 
-#include "common/httpCache.h"
-
 #include <gtest/gtest.h>
+
+#include "common/httpCache.h"
 
 using outpost::common::etagMatches;
 using outpost::common::makeEtag;

@@ -28,7 +28,7 @@ std::optional<LruCache::Lookup> LruCache::lookup(const Key& key)
     {
         order_.splice(order_.begin(), order_, it->second);
         auto age = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() -
-                                                                          it->second->storedAt);
+                                                                         it->second->storedAt);
         bool fresh = ttl_.count() == 0 || age < ttl_;
         result = Lookup{it->second->value, fresh, it->second->version, it->second->tag, age};
     }

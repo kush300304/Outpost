@@ -176,9 +176,9 @@ private:
     uint64_t entriesAppended_ = 0;
     uint64_t fsyncCount_ = 0;
     uint64_t durableSequence_ = 0;
-    bool syncInProgress_ = false;            ///< A leader is running fsync with the lock released.
-    bool failed_ = false;                    ///< An fsync failed; appends are refused.
-    std::condition_variable syncDone_;       ///< Signalled when a group fsync finishes.
+    bool syncInProgress_ = false;       ///< A leader is running fsync with the lock released.
+    bool failed_ = false;               ///< An fsync failed; appends are refused.
+    std::condition_variable syncDone_;  ///< Signalled when a group fsync finishes.
     WalRecoveryReport recovery_;
     std::vector<WalEntry> recoveredEntries_;  ///< Held until takeRecoveredEntries().
 };

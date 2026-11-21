@@ -103,30 +103,30 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(healthDelayMs.load()));
             res.status = healthy ? 200 : 503;
         });
-        http_.server.Get(
-            R"(/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
-                ++keyGets;
-                std::string key = req.matches[1].str();
-                std::string ifNoneMatch = req.get_header_value("If-None-Match");
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    lastIfNoneMatch_ = ifNoneMatch;
-                }
-                res.status = getStatus ? getStatus(key) : 404;
-                if (res.status == 200 && answerNotModified && !ifNoneMatch.empty())
-                {
-                    res.status = 304;
-                }
-                if (res.status != 304)
-                {
-                    json body = res.status == 200 ? json({{"key", key},
-                                                          {"value", "origin-" + key},
-                                                          {"version", kOriginVersion},
-                                                          {"writerId", "origin"}})
-                                                  : json({{"error", "not_found"}});
-                    res.set_content(body.dump(), "application/json");
-                }
-            });
+        http_.server.Get(R"(/key/(.+))",
+                         [this](const httplib::Request& req, httplib::Response& res) {
+                             ++keyGets;
+                             std::string key = req.matches[1].str();
+                             std::string ifNoneMatch = req.get_header_value("If-None-Match");
+                             {
+                                 std::lock_guard<std::mutex> lock(mutex_);
+                                 lastIfNoneMatch_ = ifNoneMatch;
+                             }
+                             res.status = getStatus ? getStatus(key) : 404;
+                             if (res.status == 200 && answerNotModified && !ifNoneMatch.empty())
+                             {
+                                 res.status = 304;
+                             }
+                             if (res.status != 304)
+                             {
+                                 json body = res.status == 200 ? json({{"key", key},
+                                                                       {"value", "origin-" + key},
+                                                                       {"version", kOriginVersion},
+                                                                       {"writerId", "origin"}})
+                                                               : json({{"error", "not_found"}});
+                                 res.set_content(body.dump(), "application/json");
+                             }
+                         });
         http_.server.Put(R"(/key/(.+))", [this](const httplib::Request& req,
                                                 httplib::Response& res) {
             std::string key = req.matches[1].str();

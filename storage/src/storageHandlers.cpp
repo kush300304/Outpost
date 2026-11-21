@@ -54,12 +54,12 @@ void registerStorageRoutes(httplib::Server& server, KvStore& store)
     server.Put(R"(/key/(.+))", [&store](const httplib::Request& req, httplib::Response& res) {
         std::string key = req.matches[1].str();
         json request = json::parse(req.body, nullptr, false);
-        bool valid =
-            request.is_object() && request.contains("value") && request["value"].is_string() &&
-            request.contains("version") && request["version"].is_number_unsigned() &&
-            request["version"].get<uint64_t>() > 0 && request.contains("writerId") &&
-            request["writerId"].is_string() &&
-            common::isValidWriterId(request["writerId"].get<std::string>());
+        bool valid = request.is_object() && request.contains("value") &&
+                     request["value"].is_string() && request.contains("version") &&
+                     request["version"].is_number_unsigned() &&
+                     request["version"].get<uint64_t>() > 0 && request.contains("writerId") &&
+                     request["writerId"].is_string() &&
+                     common::isValidWriterId(request["writerId"].get<std::string>());
         json body;
         if (valid)
         {

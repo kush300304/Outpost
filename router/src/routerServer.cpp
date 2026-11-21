@@ -51,8 +51,7 @@ RouterServer::RouterServer(const RouterConfig& config) : config_(config), ring_(
 
     // Purge goes to every configured edge, not only those on the ring: an edge that is off the
     // ring may still hold the key and serve it once it rejoins.
-    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req,
-                                              httplib::Response& res) {
+    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
         std::string key = req.matches[1].str();
         purges_.fetch_add(1, std::memory_order_relaxed);
         json results = json::array();
@@ -73,9 +72,8 @@ RouterServer::RouterServer(const RouterConfig& config) : config_(config), ring_(
             results.push_back({{"nodeId", id}, {"reached", reached}, {"purged", purged}});
         }
         res.status = complete ? 200 : 502;
-        res.set_content(
-            json({{"key", key}, {"complete", complete}, {"edges", results}}).dump(),
-            "application/json");
+        res.set_content(json({{"key", key}, {"complete", complete}, {"edges", results}}).dump(),
+                        "application/json");
     });
 
     server_.Get(R"(/debug/route/(.+))",

@@ -16,7 +16,7 @@ namespace common
 
 constexpr std::size_t kMaxKeyBytes = 256;            ///< Longest accepted key, in bytes.
 constexpr std::size_t kMaxValueBytes = 1024 * 1024;  ///< Largest accepted value, in bytes.
-constexpr std::size_t kMaxWriterIdBytes = 64;         ///< Longest accepted writer id, in bytes.
+constexpr std::size_t kMaxWriterIdBytes = 64;        ///< Longest accepted writer id, in bytes.
 
 /// @brief Whether id is a valid writer id: 1–64 characters from [A-Za-z0-9._-].
 ///

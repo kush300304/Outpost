@@ -87,18 +87,17 @@ public:
         };
         server_->Get(R"(/key/(.+))", handler);
         server_->Put(R"(/key/(.+))", handler);
-        server_->Post(R"(/purge/key/(.+))", [this](const httplib::Request& req,
-                                                   httplib::Response& res) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                lastPurged = req.matches[1].str();
-            }
-            ++purges;
-            res.set_content(json({{"key", req.matches[1].str()}, {"purged", true},
-                                  {"nodeId", id_}})
-                                .dump(),
-                            "application/json");
-        });
+        server_->Post(
+            R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    lastPurged = req.matches[1].str();
+                }
+                ++purges;
+                res.set_content(
+                    json({{"key", req.matches[1].str()}, {"purged", true}, {"nodeId", id_}}).dump(),
+                    "application/json");
+            });
         port_ = port == 0 ? server_->bind_to_any_port("127.0.0.1")
                           : (server_->bind_to_port("127.0.0.1", port) ? port : -1);
         thread_ = std::thread([this] { server_->listen_after_bind(); });
@@ -139,7 +138,7 @@ public:
     std::string lastSeen(const std::string& header) const
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        return header == "If-None-Match" ? lastIfNoneMatch
+        return header == "If-None-Match"   ? lastIfNoneMatch
                : header == "Cache-Control" ? lastCacheControl
                                            : lastPurged;
     }
@@ -342,8 +341,8 @@ TEST_F(RouterFixture, NoHealthyEdgeIs503)
 
 TEST_F(RouterFixture, ConditionalRequestHeadersAndCacheHeadersPassThrough)
 {
-    auto res = client().Get("/key/k", {{"If-None-Match", "\"6-edge-1\""},
-                                       {"Cache-Control", "no-cache"}});
+    auto res =
+        client().Get("/key/k", {{"If-None-Match", "\"6-edge-1\""}, {"Cache-Control", "no-cache"}});
     ASSERT_TRUE(res);
     std::string owner = res->get_header_value("X-Node");
     const FakeEdge* edge = nullptr;

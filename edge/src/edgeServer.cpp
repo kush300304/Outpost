@@ -207,11 +207,10 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
             }
             long long ageSeconds = duration_cast<seconds>(served->age).count();
             long long ttlSeconds = duration_cast<seconds>(config_.cacheTtl).count();
-            std::string maxAge = config_.cacheTtl.count() > 0
-                                     ? "max-age=" +
-                                           std::to_string(std::max(0LL, ttlSeconds - ageSeconds)) +
-                                           ", "
-                                     : std::string();
+            std::string maxAge =
+                config_.cacheTtl.count() > 0
+                    ? "max-age=" + std::to_string(std::max(0LL, ttlSeconds - ageSeconds)) + ", "
+                    : std::string();
             long long staleSeconds = duration_cast<seconds>(config_.staleIfError).count();
             res.set_header("Age", std::to_string(ageSeconds));
             res.set_header("Cache-Control",
@@ -232,15 +231,13 @@ EdgeServer::EdgeServer(const EdgeConfig& config)
         }
     });
 
-    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req,
-                                              httplib::Response& res) {
+    server_.Post(R"(/purge/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
         std::string key = req.matches[1].str();
         bool purged = cache_.remove(key);
         purges_.fetch_add(1, std::memory_order_relaxed);
         recordEvent("purge", key + (purged ? " evicted" : " was not cached"));
-        res.set_content(
-            json({{"key", key}, {"purged", purged}, {"nodeId", config_.nodeId}}).dump(),
-            "application/json");
+        res.set_content(json({{"key", key}, {"purged", purged}, {"nodeId", config_.nodeId}}).dump(),
+                        "application/json");
     });
 
     server_.Put(R"(/key/(.+))", [this](const httplib::Request& req, httplib::Response& res) {
