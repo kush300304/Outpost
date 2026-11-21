@@ -1,5 +1,8 @@
 # Outpost
 
+[![CI](https://github.com/kush300304/Outpost/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/kush300304/Outpost/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **A fault-tolerant edge/origin request router in C++17.** Outpost puts consistent-hash routing, per-edge
 caching, rate limiting and a circuit breaker in front of a small authoritative origin. When the origin fails,
 the system degrades instead of falling over: cached reads keep being served, writes are queued durably at the
@@ -399,5 +402,9 @@ dashboard/   static dashboard (ES modules in src/), nginx config, browser click 
 scripts/     localCluster, integrationTest, chaosTest, runBenchmark, dashboardAcceptance, seedData,
              shutdownTest, checkStyle, format
 benchmarks/  k6 workloads (readHeavy, conditional) and dated results
-docs/        architecture, stats API, benchmarks, testing checklist, roadmap, gate records, images
+docs/        architecture, design walkthrough, hands-on tour, stats API, benchmarks, testing checklist,
+             decision records (adr/), gate records, final checks, images
 ```
+
+Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md). Security model and reporting: [SECURITY.md](SECURITY.md).
+Licence: [MIT](LICENSE).
