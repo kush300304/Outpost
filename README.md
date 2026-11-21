@@ -170,7 +170,8 @@ More detail: [docs/architecture.md](docs/architecture.md); edge stats contract:
     31.9 %.
   - Adding a node now moves 29.3 / 23.0 / 16.4 % of keys (ideal 25 / 20 / 16.7 %).
 - **Breaker thresholds: 3 failures, 1 s heartbeat, 5 s reset.**
-  - An outage is detected within about 3 s (measured 0.7–3.1 s across runs; failed requests speed it up).
+  - An outage is detected within a few seconds: measured 0.7–5.3 s across runs. Each health check can wait up
+    to 1 s on a dead dependency, and failed requests speed detection up.
   - During recovery the origin sees a single probe, not a thundering herd.
   - A probe whose result is lost is replaced after the same timeout, so the breaker can't wedge in HALF_OPEN.
   - Lower thresholds react faster but flap on transient errors; higher ones serve errors for longer.
