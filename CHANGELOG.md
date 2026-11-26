@@ -3,6 +3,12 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- The dashboard's browser click test (`dashboard/tests/browserClickTest.ps1`) creates its screenshot folder when
+  it does not exist, instead of failing after the guided demo.
+
 ## [1.0.1] - 2026-11-21
 
 ### Fixed
