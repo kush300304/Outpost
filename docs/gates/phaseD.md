@@ -1,6 +1,6 @@
 # Phase D exit gate: remaining v1
 
-Run: 2026-11-20T19:58:56Z on `d15acae`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2; g++ 15.2.0.
+Run: 2026-11-20T19:58:56Z on `64e0772`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2; g++ 15.2.0.
 
 ## 1. Build + ctest (includes the stats-schema test)
 
@@ -82,4 +82,4 @@ ThreadSanitizer reports: 0
 
 ## Start-up measurement for R11 (storage reads its WAL once)
 
-Probe: build a 300,000-record WAL (46,733,340 bytes) and time `KvStore` construction three times, linked against the Debug-built `storage_lib` and `outpost_common`. Before `c7ac693`: 7232 / 7195 / 7147 ms. After: 3777 / 3742 / 3738 ms. Separately, WAL open + recovery alone took 3480 ms and a second `replay()` 3423 ms, which is the double read that was removed.
+Probe: build a 300,000-record WAL (46,733,340 bytes) and time `KvStore` construction three times, linked against the Debug-built `storage_lib` and `outpost_common`. Before `f6ea340`: 7232 / 7195 / 7147 ms. After: 3777 / 3742 / 3738 ms. Separately, WAL open + recovery alone took 3480 ms and a second `replay()` 3423 ms, which is the double read that was removed.

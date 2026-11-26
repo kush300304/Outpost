@@ -1,6 +1,6 @@
 # Phase G record: test inventory cited by README
 
-Run: 2026-11-20T21:12:17Z on `d3bf7a9`.
+Run: 2026-11-20T21:12:17Z on `9dc64a9`.
 
 ```
 common_tests: [  PASSED  ] 30 tests.
@@ -16,7 +16,7 @@ $ ctest --test-dir build
 ## Edge failover timing in compose (measured while writing docs/testing.md)
 
 Measured by killing `edge-2` (`docker compose kill edge-2`) and timing from the host, before and after
-`b7101ad` (one 1 s DNS attempt + IPv4-only clients):
+`437a3a2` (one 1 s DNS attempt + IPv4-only clients):
 
 ```
 before: getent hosts edge-2 (stopped) inside the router container: 7111 ms, exit 2

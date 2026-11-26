@@ -1,6 +1,6 @@
 # Phase B exit gate: failure detection
 
-Run: 2026-11-19T19:45:01Z on `77df0f1`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2.
+Run: 2026-11-19T19:45:01Z on `8faadad`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2.
 
 ## 1. Build + ctest
 
@@ -111,7 +111,7 @@ storage stopped (SIGTERM)
 ## 5. Style and dependency checks
 
 ```
-$ python3 scripts/checkStyle.py $(git diff --name-only 3adb91e HEAD -- "*.h" "*.cpp")
+$ python3 scripts/checkStyle.py $(git diff --name-only f3fa6a2 HEAD -- "*.h" "*.cpp")
 checkStyle: 15 files, 0 violations
 $ grep -nE "spdlog|nlohmann|httplib" common/include/common/circuitBreaker.h common/src/circuitBreaker.cpp
 (no matches)

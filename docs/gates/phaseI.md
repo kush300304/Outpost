@@ -1,15 +1,15 @@
 # Phase I exit gate: group commit
 
-Run: 2026-11-21 on `a74a62c` (benchmarks and chaos) and `09a78c6` (tests). Host: AMD Ryzen 5 5600H with
+Run: 2026-11-21 on `20b5f28` (benchmarks and chaos) and `f62f062` (tests). Host: AMD Ryzen 5 5600H with
 Radeon Graphics, 12 threads, 7.4Gi RAM, WSL2 + Docker Desktop 29.9.3; g++ 15.2.0.
 
-The images were built at `1597178`. The run files record `a74a62c`, which was HEAD during the runs and
-differs from `1597178` only by clang-format reflow. Both already contain the Phase J edge and router changes
+The images were built at `f86fef8`. The run files record `20b5f28`, which was HEAD during the runs and
+differs from `f86fef8` only by clang-format reflow. Both already contain the Phase J edge and router changes
 (HTTP caching headers, purge). Those do not touch the write path apart from adding an `ETag` header to PUT
 responses.
 
-Commits: WAL group commit `b5a5d59`, KvStore put without the map lock across the fsync `db79e1b`, WAL
-truncate test and per-run fsync accounting `09a78c6`.
+Commits: WAL group commit `341c721`, KvStore put without the map lock across the fsync `c870195`, WAL
+truncate test and per-run fsync accounting `f62f062`.
 
 ## 1. Tests in all three builds
 
@@ -75,11 +75,11 @@ router, with every storage write fsync'd.
 
 | Run | Commit | req/s | PUT p50 | PUT p95 | PUT p99 | GET HIT p50 | GET HIT p99 | appends per fsync |
 |---|---|---|---|---|---|---|---|---|
-| `2026-11-20T213128Z-benchmark` (before) | `09a8c2e` | 2345 | 113.90 | 123.73 | 214.76 | 0.96 | 1.64 | 1 (by design) |
-| `2026-11-21T105221Z-benchmark` | `a74a62c` | 6478 | 12.33 | 17.92 | 21.43 | 2.80 | 10.24 | not recorded |
-| `2026-11-21T105412Z-benchmark` | `a74a62c` | 5929 | 13.04 | 20.52 | 27.99 | 3.02 | 11.96 | see NOTE.md |
-| `2026-11-21T105557Z-benchmark` | `a74a62c` + script change | 6123 | 12.70 | 18.91 | 23.76 | 2.95 | 11.29 | **2.99** |
-| `2026-11-20T205318Z-benchmark` (fsync **off**, reference) | `11cd021` | 7360 | 6.04 | 10.40 | 13.08 | 3.33 | 9.65 | – |
+| `2026-11-20T213128Z-benchmark` (before) | `2c8f199` | 2345 | 113.90 | 123.73 | 214.76 | 0.96 | 1.64 | 1 (by design) |
+| `2026-11-21T105221Z-benchmark` | `20b5f28` | 6478 | 12.33 | 17.92 | 21.43 | 2.80 | 10.24 | not recorded |
+| `2026-11-21T105412Z-benchmark` | `20b5f28` | 5929 | 13.04 | 20.52 | 27.99 | 3.02 | 11.96 | see NOTE.md |
+| `2026-11-21T105557Z-benchmark` | `20b5f28` + script change | 6123 | 12.70 | 18.91 | 23.76 | 2.95 | 11.29 | **2.99** |
+| `2026-11-20T205318Z-benchmark` (fsync **off**, reference) | `fad4267` | 7360 | 6.04 | 10.40 | 13.08 | 3.33 | 9.65 | – |
 
 Latencies are in ms. 0 failed requests and 0 non-2xx statuses in every run.
 
@@ -95,7 +95,7 @@ Latencies are in ms. 0 failed requests and 0 non-2xx statuses in every run.
   3.33 ms at 7360 req/s.
 - The second run's WAL line is mislabelled: storage was not restarted between runs, so its counters cover
   both of them (`2026-11-21T105412Z-benchmark/NOTE.md`). The script now snapshots before and after k6.
-- The third run used the uncommitted benchmark-script change, committed in `09a78c6`. The services were
+- The third run used the uncommitted benchmark-script change, committed in `f62f062`. The services were
   unchanged.
 
 ## 3. Chaos test
@@ -132,7 +132,7 @@ Gate I passed.
   rate during the 60 s measured phase is about 10 % higher (requests / 60 s): 2587 for the baseline and 6759 for
   `2026-11-21T105557Z`. The ratios above are unchanged because every run used the same definition.
 - **Same load, before and after.** The closed-loop runs above change the load as well as the code. To compare at
-  equal load, `RATE=2587 scripts/runBenchmark.sh 60s 32` (`d073bd5`) holds the arrival rate at the baseline's
+  equal load, `RATE=2587 scripts/runBenchmark.sh 60s 32` (`f5a4fa0`) holds the arrival rate at the baseline's
   measured-phase rate → `2026-11-21T114512Z-benchmark`:
 
   | At 2587 req/s | GET HIT p50 / p95 / p99 | PUT p50 / p95 / p99 | writes per fsync |

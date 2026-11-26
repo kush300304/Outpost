@@ -17,7 +17,7 @@ g++ 15.2.0. CI runs on GitHub's ubuntu-24.04 runners.
 
 ## Final check 2: after Phases I and J (2026-11-21)
 
-The clone was `git clone --branch v1-completion <GitHub remote>` at **`67b2e40`**. The commits after it on the
+The clone was `git clone --branch v1-completion <GitHub remote>` at **`87e5989`**. The commits after it on the
 branch change documentation only (`docs/handsOnTour.md`, the interview notes, README links).
 
 ### Summary
@@ -275,7 +275,7 @@ background work, so treat single numbers from it as ±20 %. The conclusions are 
 
 ### 6. CI
 
-Run 44903184983 for `67b2e40`: build-and-test, sanitizers (address,undefined), sanitizers (thread), style and
+Run 44903184983 for `87e5989`: build-and-test, sanitizers (address,undefined), sanitizers (thread), style and
 compose-integration all **success** (4 min 44 s).
 
 ### Still pending
@@ -291,7 +291,7 @@ compose-integration all **success** (4 min 44 s).
 
 
 The v1 final verification ran on 2026-11-20 against the development branch `v1-completion` at
-commit `09a8c2e`. Two things were verified:
+commit `2c8f199`. Two things were verified:
 - a **fresh clone** (`git clone --branch v1-completion`) in an empty directory, with no build tree,
   dependency cache or Docker volume reused;
 - CI on GitHub for the same commit.
@@ -321,7 +321,7 @@ g++ 15.2.0, CMake 4.2.3. CI runs on GitHub's ubuntu-24.04 runners.
 
 ```
 $ git clone --branch v1-completion <repo> fresh && cd fresh
-09a8c2e Record Phase G gate results
+2c8f199 Record Phase G gate results
 $ cmake -S . -B build && cmake --build build -j && ctest --test-dir build
 real	2m15.927s
 1/5 Test #1: common_tests .....................   Passed    0.03 sec
@@ -511,7 +511,7 @@ Raw output: `benchmarks/results/2026-11-20T213128Z-benchmark/`.
 ```
 $ scripts/runBenchmark.sh 60s 32
 date: 2026-11-20T21:31:28Z
-commit: 09a8c2e
+commit: 2c8f199
 cpu: AMD Ryzen 5 5600H with Radeon Graphics (12 threads visible)
 memory: 7.4Gi
 kernel: 6.18.58.1-microsoft-standard-WSL2
@@ -523,7 +523,7 @@ WAL fsync on every write: WAL_FSYNC=1 (1 = durable across power loss)
 
 ```
 date: 2026-11-20T21:31:28Z
-commit: 09a8c2e
+commit: 2c8f199
 cpu: AMD Ryzen 5 5600H with Radeon Graphics (12 threads visible)
 memory: 7.4Gi
 kernel: 6.18.58.1-microsoft-standard-WSL2
@@ -553,7 +553,7 @@ exit status: 0
 
 ```
 $ gh run view 44819680690 --json headSha,conclusion,jobs
-09a8c2effbab6e0a42d1934cb4acea79b8d62f71
+2c8f1992611c3779e51b922e978863f6617073ff
 success
 sanitizers (thread): success
 sanitizers (address,undefined): success

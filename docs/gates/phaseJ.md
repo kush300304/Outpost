@@ -1,20 +1,20 @@
 # Phase J exit gate: standard HTTP caching and purge
 
-Run: 2026-11-21 on `5506394`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, 7.4Gi RAM, WSL2 + Docker
+Run: 2026-11-21 on `9ea750e`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, 7.4Gi RAM, WSL2 + Docker
 Desktop 29.9.3; g++ 15.2.0. Owner decisions: scope "Core CDN set"; purge open on the router (trusted network);
 dashboard layout "story on top", easier both to use and to change.
 
 Commits:
-- `ad75bba`: ETag helpers.
-- `3fd1788`: storage and write-api answer 304; writer ids restricted to `[A-Za-z0-9._-]` because they are part of
+- `d748e42`: ETag helpers.
+- `25b75c0`: storage and write-api answer 304; writer ids restricted to `[A-Za-z0-9._-]` because they are part of
   the ETag.
-- `e19c5a4`: LRU lookups return the version, tag and age.
-- `4993fb4`: the edge sends caching headers, answers 304, revalidates, honours no-cache, bounds stale serving and
+- `f607d46`: LRU lookups return the version, tag and age.
+- `7d1d08e`: the edge sends caching headers, answers 304, revalidates, honours no-cache, bounds stale serving and
   purges.
-- `1597178`: the router passes the headers through and fans purges out.
-- `5224b44`: integration checks.
-- `6a06814`, `b22df00`, `58a477a`, `6e517d3`: dashboard.
-- `5506394`: k6 conditional workload.
+- `f86fef8`: the router passes the headers through and fans purges out.
+- `9b6da00`: integration checks.
+- `3b747c5`, `4f4ba5a`, `d1dd1fe`, `8009e7a`: dashboard.
+- `9ea750e`: k6 conditional workload.
 
 ## 1. Tests in all three builds
 
@@ -106,8 +106,8 @@ integrationTest: 0 failed check(s)
 The first run of that click test found a real bug that the curl-based checks cannot see. Every dashboard read was
 being revalidated (step 4 got REVALIDATED instead of HIT). `fetch(…, {cache: 'no-store'})` adds
 `Cache-Control: no-cache` to requests that have no `Cache-Control` header, and the edge now honours `no-cache`.
-Fixed in `b22df00`. The same run showed that the load generator only ever read keys nobody had written (every
-read a 404 MISS); fixed in `58a477a`.
+Fixed in `4f4ba5a`. The same run showed that the load generator only ever read keys nobody had written (every
+read a 404 MISS); fixed in `d1dd1fe`.
 
 ## 3. k6 with conditional requests
 

@@ -1,6 +1,6 @@
 # Phase C exit gate: wiring
 
-Run: 2026-11-20T19:26:52Z on `9d84532`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2; g++ 15.2.0.
+Run: 2026-11-20T19:26:52Z on `c3547b2`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, WSL2; g++ 15.2.0.
 
 ## 1. Build + ctest
 
@@ -169,7 +169,7 @@ storage stopped (SIGTERM)
 ```
 $ grep -rnE "spdlog|nlohmann|httplib" common/
 (no matches)
-$ python3 scripts/checkStyle.py $(git diff --name-only b1aa8b5 HEAD -- "*.h" "*.cpp")
+$ python3 scripts/checkStyle.py $(git diff --name-only a682a3f HEAD -- "*.h" "*.cpp")
 checkStyle: 21 files, 0 violations
 ```
 

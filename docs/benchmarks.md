@@ -41,9 +41,9 @@ All numbers below come from `scripts/runBenchmark.sh` runs saved under `benchmar
 
 | Run | Commit | Requests/s | GET HIT p50 / p95 / p99 | PUT p50 / p95 / p99 |
 |---|---|---|---|---|
-| `2026-11-20T205135Z` (gate E) | `11cd021` | 2527 | 1.07 / 1.44 / 1.97 | 115.58 / 126.30 / 220.44 |
-| `2026-11-20T213128Z` (final check) | `09a8c2e` | 2587 | 0.96 / 1.24 / 1.64 | 113.90 / 123.73 / 214.76 |
-| `2026-11-20T205318Z` (**fsync off**, reference) | `11cd021` | 7655 | 3.33 / 7.15 / 9.65 | 6.04 / 10.40 / 13.08 |
+| `2026-11-20T205135Z` (gate E) | `fad4267` | 2527 | 1.07 / 1.44 / 1.97 | 115.58 / 126.30 / 220.44 |
+| `2026-11-20T213128Z` (final check) | `2c8f199` | 2587 | 0.96 / 1.24 / 1.64 | 113.90 / 123.73 / 214.76 |
+| `2026-11-20T205318Z` (**fsync off**, reference) | `fad4267` | 7655 | 3.33 / 7.15 / 9.65 | 6.04 / 10.40 / 13.08 |
 
 - **Why writes were slow:** storage applied writes one at a time under one lock and fsynced each one, so 32
   clients queued behind each other's fsyncs.
@@ -119,12 +119,12 @@ The same three workloads were rerun on the final code from a fresh clone, on the
 
 ## Problems the benchmarks found
 
-1. **Nagle's algorithm** (`2cd93bf`): cpp-httplib leaves `TCP_NODELAY` off, so on keep-alive connections
+1. **Nagle's algorithm** (`2f9c7c8`): cpp-httplib leaves `TCP_NODELAY` off, so on keep-alive connections
    every request after the first waited ~40 ms for a delayed ACK (first trial: cache-hit p50 44 ms).
-2. **Worker starvation** (`11cd021`): an idle keep-alive connection holds a server worker for up to 5 s,
+2. **Worker starvation** (`fad4267`): an idle keep-alive connection holds a server worker for up to 5 s,
    and the default pool is CPU count − 1, so 32 clients queued behind idle connections (cache-hit p99
    107 ms, max 10.3 s). The pool is now 64 workers.
-3. **Writes serialized behind fsync** (`b5a5d59`, `db79e1b`): the measured PUT p50 of 114 ms led to group commit.
+3. **Writes serialized behind fsync** (`341c721`, `c870195`): the measured PUT p50 of 114 ms led to group commit.
 
 Each of these has a regression test.
 

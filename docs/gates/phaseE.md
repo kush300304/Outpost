@@ -1,6 +1,6 @@
 # Phase E exit gate: verification
 
-Run: 2026-11-20T20:56:21Z on `0dba1bb`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, 7.4Gi RAM, WSL2 + Docker Desktop 29.9.3; g++ 15.2.0.
+Run: 2026-11-20T20:56:21Z on `2feec2c`. Host: AMD Ryzen 5 5600H with Radeon Graphics, 12 threads, 7.4Gi RAM, WSL2 + Docker Desktop 29.9.3; g++ 15.2.0.
 
 ## 1. ASan + UBSan
 
@@ -109,7 +109,7 @@ exit status: 0
 
 ## 6. Benchmark
 
-Headline run `benchmarks/results/2026-11-20T205135Z-benchmark` (built at `11cd021`; later commits change only docs, scripts and compose overrides):
+Headline run `benchmarks/results/2026-11-20T205135Z-benchmark` (built at `fad4267`; later commits change only docs, scripts and compose overrides):
 
 Measured phase: 151621 requests, 2286 requests/s (k6 iterations; the 1000 setup PUTs are excluded).
 
@@ -136,7 +136,7 @@ clang-format: 44 files, all formatted
 
 ## 8. CI on GitHub Actions
 
-First run of `.github/workflows/ci.yml` after the Phase E push (run `44816257622`, commit `d9d7d0f`, ubuntu-24.04 runners):
+First run of `.github/workflows/ci.yml` after the Phase E push (run `44816257622`, commit `4505572`, ubuntu-24.04 runners):
 
 ```
 $ gh run view 44816257622 --json conclusion,jobs

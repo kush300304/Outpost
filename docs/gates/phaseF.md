@@ -1,6 +1,6 @@
 # Phase F exit gate: dashboard
 
-Run: 2026-11-20T21:11:08Z on `7d0257e`. Host: AMD Ryzen 5 5600H with Radeon Graphics, WSL2 + Docker Desktop 29.9.3.
+Run: 2026-11-20T21:11:08Z on `1ddcf27`. Host: AMD Ryzen 5 5600H with Radeon Graphics, WSL2 + Docker Desktop 29.9.3.
 
 ## 1. Dashboard and proxy paths
 

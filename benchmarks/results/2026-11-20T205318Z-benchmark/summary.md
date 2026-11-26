@@ -2,7 +2,7 @@
 
 ```
 date: 2026-11-20T20:53:18Z
-commit: 11cd021
+commit: fad4267
 cpu: AMD Ryzen 5 5600H with Radeon Graphics (12 threads visible)
 memory: 7.4Gi
 kernel: 6.18.58.1-microsoft-standard-WSL2
