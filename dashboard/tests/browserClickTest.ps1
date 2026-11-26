@@ -16,6 +16,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $port = 9333
 $profileDir = Join-Path $env:TEMP ('outpostDemo' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $console = New-Object System.Collections.ArrayList
